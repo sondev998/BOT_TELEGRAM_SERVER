@@ -15,8 +15,14 @@ class SystemUtils:
     START_TIME = time.time()
 
     @classmethod
-    def get_system_status(cls, current_workspace: str = "", conversation_id: str = "") -> str:
-        """Lấy thông tin tổng quan về tài nguyên máy tính."""
+    def get_system_status(
+        cls,
+        current_workspace: str = "",
+        conversation_id: str = "",
+        active_agent: str = "",
+        model_name: str = "",
+    ) -> str:
+        """Lấy thông tin tổng quan về tài nguyên máy tính và agent hiện tại."""
         # CPU
         cpu_percent = psutil.cpu_percent(interval=0.2)
         cpu_count = psutil.cpu_count(logical=True)
@@ -44,17 +50,26 @@ class SystemUtils:
             except Exception:
                 continue
 
-        disks_str = "\n".join(disk_lines) if disk_lines else "  Không lấy được thông tin ổ đĩa"
+        disks_str = (
+            "\n".join(disk_lines)
+            if disk_lines
+            else "  Không lấy được thông tin ổ đĩa"
+        )
+
+        agent_info = f"🤖 **Agent Đang Dùng:** `{active_agent}`\n" if active_agent else ""
+        model_info = f"🧠 **Model:** `{model_name}`\n" if model_name else ""
 
         status_text = (
             f"🖥️ **THÔNG TIN HỆ THỐNG PC**\n\n"
+            f"{agent_info}"
+            f"{model_info}"
             f"💻 **Hệ điều hành:** {platform.system()} {platform.release()} ({platform.machine()})\n"
             f"⏱️ **Bot Uptime:** `{uptime_str}`\n"
             f"⚡ **CPU ({cpu_count} cores):** `{cpu_percent}%`\n"
             f"🧠 **RAM:** `{ram_used_gb:.1f} / {ram_total_gb:.1f} GB` ({ram.percent}%)\n\n"
             f"💽 **Ổ đĩa:**\n{disks_str}\n\n"
-            f"📂 **Workspace hiện tại:**\n`{current_workspace or 'Mặc định'}`\n\n"
-            f"💬 **Conversation ID:**\n`{conversation_id or 'Chưa có phiên (Sẽ tạo mới)'}`"
+            f"📂 **Workspace:**\n`{current_workspace or 'Mặc định'}`\n\n"
+            f"💬 **Session ID:**\n`{conversation_id or 'Chưa có phiên (Sẽ tạo mới)'}`"
         )
         return status_text
 
@@ -62,7 +77,6 @@ class SystemUtils:
     def capture_screenshot(cls) -> tuple[bool, io.BytesIO | str]:
         """Chụp ảnh màn hình máy tính."""
         try:
-            # Chụp toàn màn hình
             screenshot = ImageGrab.grab(all_screens=True)
             bio = io.BytesIO()
             bio.name = "desktop_screenshot.png"

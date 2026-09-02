@@ -1,5 +1,4 @@
 import asyncio
-import html
 import io
 import logging
 import os
@@ -22,7 +21,8 @@ from telegram.ext import (
     filters,
 )
 
-from agy_runner import agy_runner
+from agent_base import AgentType
+from agent_manager import agent_mgr
 from config import Config
 from system_utils import SystemUtils
 from workspace_manager import workspace_mgr
@@ -38,7 +38,7 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
 )
-logger = logging.getLogger("AntigravityTelegramBot")
+logger = logging.getLogger("DualAgentTelegramBot")
 
 
 # ==========================================
@@ -54,12 +54,13 @@ async def send_unauthorized_msg(update: Update):
     """Thông báo khi người dùng chưa được cấp quyền."""
     user = update.effective_user
     user_id = user.id if user else 0
+    env_file_path = Config.BASE_DIR / ".env"
     text = (
         f"⛔ **BẠN CHƯA ĐƯỢC PHÂN QUYỀN TRUY CẬP**\n\n"
         f"👤 **User ID của bạn:** `{user_id}`\n\n"
         f"👉 **Cách cấp quyền:**\n"
         f"1. Mở file `.env` tại thư mục bot trên máy tính:\n"
-        f"   `E:\\TELEGRAM_BOT\\GAME_DEV_BOT\\.env`\n"
+        f"   `{env_file_path}`\n"
         f"2. Thêm ID của bạn vào dòng:\n"
         f"   `ALLOWED_USER_IDS={user_id}`\n"
         f"3. Lưu file và khởi động lại Bot."
@@ -93,21 +94,20 @@ async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: 
             await bot.send_message(chat_id=chat_id, text=summary, reply_to_message_id=reply_to_message_id)
 
         file_data = io.BytesIO(text.encode("utf-8"))
-        file_data.name = f"antigravity_output_{int(time.time())}.md"
+        file_data.name = f"agent_output_{int(time.time())}.md"
         await bot.send_document(
             chat_id=chat_id,
             document=file_data,
-            caption="📄 Toàn bộ nội dung phản hồi từ Antigravity",
+            caption="📄 Toàn bộ nội dung phản hồi từ Agent",
         )
         return
 
-    # Chia nhỏ tin nhắn nếu dài hơn 4000 ký tự
+    # Chia nhỏ tin nhắn nếu dài hơn 3800 ký tự
     max_chunk = 3800
     chunks = []
     if len(text) <= max_chunk:
         chunks.append(text)
     else:
-        # Cắt theo dòng
         lines = text.splitlines(keepends=True)
         cur_chunk = ""
         for line in lines:
@@ -136,6 +136,56 @@ async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: 
             )
 
 
+def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
+    """Tạo bàn phím menu chính."""
+    active_agent = agent_mgr.get_active_agent_type(user_id)
+    agent_switch_label = (
+        "⚡ Chuyển sang Codex" if active_agent == AgentType.ANTIGRAVITY else "🤖 Chuyển sang Antigravity"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+            InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
+        ],
+        [
+            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
+            InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
+        ],
+        [
+            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
+            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
+        ],
+        [
+            InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
+        ],
+    ]
+    return InlineKeyboardMarkup(keyboard)
+
+
+def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str:
+    """Tạo nội dung text cho Dashboard chính."""
+    ws = workspace_mgr.get_current_workspace(user_id)
+    active_type = agent_mgr.get_active_agent_type(user_id)
+    runner = agent_mgr.get_active_runner(user_id)
+    session = agent_mgr.get_session(user_id, active_type)
+
+    agent_badge = f"{runner.emoji} **{runner.display_name}**"
+    session_id_display = session.conversation_id[:12] + "..." if session.conversation_id else "Chưa có (sẽ tạo mới)"
+
+    msg = (
+        f"🤖 **DUAL AGENT TELEGRAM CONTROLLER**\n\n"
+        f"Chào mừng **{user_first_name}**! Bạn có thể lập trình, fix bug và quản trị PC từ xa.\n\n"
+        f"🛠️ **Agent Đang Dùng:** {agent_badge}\n"
+        f"📂 **Workspace:** `{ws}`\n"
+        f"🧠 **Model:** `{session.model or 'Mặc định'}`\n"
+        f"⚡ **Effort:** `{session.effort or 'Mặc định'}`\n"
+        f"💬 **Session ID:** `{session_id_display}`\n\n"
+        f"👇 **Chọn chức năng nhanh bên dưới:**"
+    )
+    return msg
+
+
 # ==========================================
 # COMMAND HANDLERS
 # ==========================================
@@ -147,37 +197,42 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_unauthorized_msg(update)
         return
 
-    ws = workspace_mgr.get_current_workspace(user.id)
-    session = agy_runner.get_session(user.id)
+    msg = get_main_dashboard_text(user.id, user.first_name)
+    reply_markup = build_main_menu_keyboard(user.id)
+
+    await update.message.reply_text(
+        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+    )
+
+
+async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /agent - Chọn Agent Engine."""
+    user = update.effective_user
+    if not is_authorized(user.id):
+        await send_unauthorized_msg(update)
+        return
+
+    active_type = agent_mgr.get_active_agent_type(user.id)
+    agy_active = "✅ " if active_type == AgentType.ANTIGRAVITY else "▫️ "
+    codex_active = "✅ " if active_type == AgentType.CODEX else "▫️ "
 
     msg = (
-        f"🤖 **ANTIGRAVITY TELEGRAM CONTROLLER**\n\n"
-        f"Chào mừng **{user.first_name}**! Bạn có thể gửi lệnh trực tiếp để Antigravity lập trình, sửa lỗi và quản lý dự án trên PC.\n\n"
-        f"📂 **Workspace:** `{ws}`\n"
-        f"🧠 **Model:** `{session.model}`\n"
-        f"⚡ **Effort:** `{session.effort}` | **Mode:** `{session.mode}`\n"
-        f"💬 **Session ID:** `{session.conversation_id or 'Chưa có (sẽ tạo mới)'}`\n\n"
-        f"👇 **Chọn chức năng nhanh:**"
+        f"🔀 **CHỌN AGENT ENGINE ĐIỀU KHIỂN**\n\n"
+        f"• 🤖 **Google Antigravity:** Tối ưu hóa cho Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, đa chế độ thực thi (Accept-Edits, Plan).\n\n"
+        f"• ⚡ **OpenAI Codex:** Tối ưu hóa cho GPT-5.6 Terra, o3, o3-mini, GPT-4.1, hỗ trợ sandbox elevated và MCP Tools.\n\n"
+        f"👇 Nhấn chọn Agent bạn muốn sử dụng:"
     )
 
     keyboard = [
         [
-            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
-            InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
+            InlineKeyboardButton(f"{agy_active}🤖 Antigravity", callback_data="set_agent_antigravity"),
+            InlineKeyboardButton(f"{codex_active}⚡ OpenAI Codex", callback_data="set_agent_codex"),
         ],
-        [
-            InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
-            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-        ],
-        [
-            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
-            InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
-        ],
+        [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
     ]
-    reply_markup = InlineKeyboardMarkup(keyboard)
 
     await update.message.reply_text(
-        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -189,22 +244,23 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     help_text = (
-        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN ANTIGRAVITY QUA TELEGRAM**\n\n"
+        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN DUAL AGENT BOT**\n\n"
         f"💬 **Trò chuyện & Lập trình:**\n"
         f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu cho bot (ví dụ: `Hãy viết script tải ảnh`, `Kiểm tra lỗi trong file main.py`, ...)\n"
-        f"• Bot sẽ gọi Antigravity CLI, tự động đọc/ghi file và thực thi lệnh.\n\n"
+        f"• Bot sẽ gọi Agent đang chọn (Antigravity hoặc Codex) để tự động đọc/ghi file và thực thi lệnh.\n\n"
         f"🎛️ **Các lệnh điều khiển:**\n"
         f"• `/start` - Mở bảng điều khiển chính\n"
-        f"• `/new` hoặc `/reset` - Bắt đầu phiên trò chuyện mới (xóa ngữ cảnh cũ)\n"
-        f"• `/stop` - Hủy tác vụ Antigravity đang chạy dở\n"
-        f"• `/workspace` hoặc `/ws` - Xem và đổi thư mục làm việc\n"
+        f"• `/agent` - Đổi giữa **🤖 Antigravity** và **⚡ OpenAI Codex**\n"
+        f"• `/model` - Đổi Model AI và Reasoning Effort\n"
+        f"• `/workspace` hoặc `/ws` - Xem và đổi thư mục dự án\n"
         f"• `/cd <đường dẫn>` - Chuyển sang thư mục bất kỳ trên máy tính\n"
+        f"• `/new` hoặc `/reset` - Bắt đầu phiên trò chuyện mới\n"
+        f"• `/stop` - Hủy tác vụ đang chạy dở\n"
         f"• `/status` - Xem CPU, RAM, Ổ cứng, Uptime máy tính\n"
-        f"• `/screenshot` hoặc `/screen` - Chụp ảnh màn hình máy tính gửi về điện thoại\n"
+        f"• `/screenshot` hoặc `/screen` - Chụp màn hình PC gửi về điện thoại\n"
         f"• `/cmd <lệnh>` - Chạy lệnh PowerShell trực tiếp trên PC\n"
         f"• `/ls [thư mục]` - Xem danh sách file trong workspace\n"
-        f"• `/view <file>` - Xem nội dung file ngay trên Telegram\n"
-        f"• `/model` - Đổi model AI (Gemini 3.7 Flash, Pro...)\n\n"
+        f"• `/view <file>` - Xem nội dung file ngay trên Telegram\n\n"
         f"📥 **Gửi file/ảnh:**\n"
         f"• Bạn có thể gửi file/ảnh trực tiếp qua Telegram, bot sẽ lưu thẳng vào thư mục làm việc hiện tại!"
     )
@@ -218,9 +274,12 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_unauthorized_msg(update)
         return
 
-    agy_runner.reset_session(user.id)
+    active_type = agent_mgr.get_active_agent_type(user.id)
+    runner = agent_mgr.get_active_runner(user.id)
+    agent_mgr.reset_session(user.id, active_type)
+
     await update.message.reply_text(
-        "🔄 **Đã làm mới phiên làm việc!**\nTin nhắn tiếp theo sẽ bắt đầu một cuộc hội thoại mới với Antigravity.",
+        f"🔄 **Đã làm mới phiên làm việc của {runner.display_name}!**\nTin nhắn tiếp theo sẽ bắt đầu một cuộc hội thoại mới.",
         parse_mode=ParseMode.MARKDOWN,
     )
 
@@ -232,10 +291,10 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_unauthorized_msg(update)
         return
 
-    if agy_runner.is_running(user.id):
-        stopped = agy_runner.cancel_active_task(user.id)
+    if agent_mgr.is_running(user.id):
+        stopped = agent_mgr.cancel_active_task(user.id)
         if stopped:
-            await update.message.reply_text("🛑 **Đã gửi tín hiệu dừng tác vụ Antigravity.**", parse_mode=ParseMode.MARKDOWN)
+            await update.message.reply_text("🛑 **Đã gửi tín hiệu dừng tác vụ Agent.**", parse_mode=ParseMode.MARKDOWN)
         else:
             await update.message.reply_text("⚠️ Không thể dừng tác vụ hoặc tác vụ đã kết thúc.", parse_mode=ParseMode.MARKDOWN)
     else:
@@ -250,14 +309,23 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     ws = workspace_mgr.get_current_workspace(user.id)
-    session = agy_runner.get_session(user.id)
-    status_text = SystemUtils.get_system_status(ws, session.conversation_id or "")
+    active_type = agent_mgr.get_active_agent_type(user.id)
+    runner = agent_mgr.get_active_runner(user.id)
+    session = agent_mgr.get_session(user.id, active_type)
+
+    status_text = SystemUtils.get_system_status(
+        current_workspace=ws,
+        conversation_id=session.conversation_id or "",
+        active_agent=runner.display_name,
+        model_name=session.model,
+    )
 
     keyboard = [
         [
             InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
             InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-        ]
+        ],
+        [InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")],
     ]
     await update.message.reply_text(
         status_text,
@@ -314,6 +382,7 @@ async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"ws_select_{idx}")])
 
     keyboard.append([InlineKeyboardButton("📂 Xem danh sách file (/ls)", callback_data="ws_list_files")])
+    keyboard.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")])
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -331,7 +400,7 @@ async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     if not context.args:
         await update.message.reply_text(
-            "⚠️ Vui lòng cung cấp đường dẫn thư mục.\nVí dụ: `/cd E:\\TELEGRAM_BOT\\GAME_DEV_BOT`",
+            f"⚠️ Vui lòng cung cấp đường dẫn thư mục.\nVí dụ: `/cd {Config.BASE_DIR}`",
             parse_mode=ParseMode.MARKDOWN,
         )
         return
@@ -406,6 +475,60 @@ async def cmd_powershell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await send_smart_message(context.bot, update.effective_chat.id, result_text, reply_to_message_id=update.message.message_id)
 
 
+def build_model_settings_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện cấu hình Model/Effort phù hợp với Agent đang kích hoạt."""
+    active_type = agent_mgr.get_active_agent_type(user_id)
+    runner = agent_mgr.get_active_runner(user_id)
+    session = agent_mgr.get_session(user_id, active_type)
+
+    msg = (
+        f"⚙️ **CÀI ĐẶT CẤU HÌNH {runner.display_name.upper()}**\n\n"
+        f"🤖 **Agent:** {runner.display_name}\n"
+        f"🧠 **Model hiện tại:** `{session.model or 'Mặc định'}`\n"
+        f"⚡ **Reasoning Effort:** `{session.effort or 'Mặc định'}`\n"
+    )
+
+    if active_type == AgentType.ANTIGRAVITY:
+        msg += f"🛠️ **Execution Mode:** `{session.mode}`\n"
+
+    msg += "\n👇 **Chọn tùy chọn bên dưới để thay đổi:**"
+
+    keyboard = []
+
+    # Danh sách Model
+    models = runner.get_available_models()
+    for i in range(0, len(models), 2):
+        row = []
+        for model_id, label in models[i : i + 2]:
+            is_cur = session.model.lower() == model_id.lower()
+            btn_text = f"{'✅ ' if is_cur else ''}{label}"
+            row.append(InlineKeyboardButton(btn_text, callback_data=f"set_model_{model_id}"))
+        keyboard.append(row)
+
+    # Danh sách Effort
+    efforts = runner.get_available_efforts()
+    effort_row = []
+    for eff_id, label in efforts:
+        is_cur = session.effort.lower() == eff_id.lower()
+        btn_text = f"{'✅ ' if is_cur else ''}Effort: {label}"
+        effort_row.append(InlineKeyboardButton(btn_text, callback_data=f"set_effort_{eff_id}"))
+    keyboard.append(effort_row)
+
+    # Mode riêng của Antigravity
+    if active_type == AgentType.ANTIGRAVITY:
+        keyboard.append([
+            InlineKeyboardButton(f"{'✅ ' if session.mode == 'accept-edits' else ''}Mode: Accept Edits", callback_data="set_mode_accept-edits"),
+            InlineKeyboardButton(f"{'✅ ' if session.mode == 'plan' else ''}Mode: Plan", callback_data="set_mode_plan"),
+        ])
+
+    keyboard.append([
+        InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+        InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+    ])
+
+    return msg, InlineKeyboardMarkup(keyboard)
+
+
 async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /model - Cài đặt Model và tham số."""
     user = update.effective_user
@@ -413,38 +536,9 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
         await send_unauthorized_msg(update)
         return
 
-    session = agy_runner.get_session(user.id)
-
-    msg = (
-        f"⚙️ **CÀI ĐẶT CẤU HÌNH ANTIGRAVITY**\n\n"
-        f"🧠 **Model hiện tại:** `{session.model}`\n"
-        f"⚡ **Reasoning Effort:** `{session.effort}`\n"
-        f"🛠️ **Execution Mode:** `{session.mode}`\n\n"
-        f"👇 Chọn tùy chọn bên dưới để thay đổi:"
-    )
-
-    keyboard = [
-        [
-            InlineKeyboardButton("⚡ Gemini 3.7 Flash", callback_data="set_model_Gemini 3.7 Flash (High)"),
-            InlineKeyboardButton("🧠 Gemini 3.1 Pro", callback_data="set_model_Gemini 3.1 Pro (High)"),
-        ],
-        [
-            InlineKeyboardButton("🎭 Claude Sonnet 4.6", callback_data="set_model_Claude Sonnet 4.6 (Thinking)"),
-            InlineKeyboardButton("🦁 Claude Opus 4.6", callback_data="set_model_Claude Opus 4.6 (Thinking)"),
-        ],
-        [
-            InlineKeyboardButton("Effort: High 🔴", callback_data="set_effort_high"),
-            InlineKeyboardButton("Effort: Medium 🟡", callback_data="set_effort_medium"),
-            InlineKeyboardButton("Effort: Low 🟢", callback_data="set_effort_low"),
-        ],
-        [
-            InlineKeyboardButton("Mode: Accept Edits", callback_data="set_mode_accept-edits"),
-            InlineKeyboardButton("Mode: Plan", callback_data="set_mode_plan"),
-        ],
-    ]
-
+    msg, reply_markup = build_model_settings_view(user.id)
     await update.message.reply_text(
-        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
     )
 
 
@@ -464,7 +558,88 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     data = query.data
 
-    if data == "menu_workspace":
+    if data == "menu_main":
+        msg = get_main_dashboard_text(user.id, user.first_name)
+        reply_markup = build_main_menu_keyboard(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data == "menu_agent":
+        active_type = agent_mgr.get_active_agent_type(user.id)
+        agy_active = "✅ " if active_type == AgentType.ANTIGRAVITY else "▫️ "
+        codex_active = "✅ " if active_type == AgentType.CODEX else "▫️ "
+
+        msg = (
+            f"🔀 **CHỌN AGENT ENGINE ĐIỀU KHIỂN**\n\n"
+            f"• 🤖 **Google Antigravity:** Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, đa chế độ thực thi.\n\n"
+            f"• ⚡ **OpenAI Codex:** GPT-5.6 Terra, o3, o3-mini, GPT-4.1, elevated sandbox & MCP.\n\n"
+            f"👇 Nhấn để chuyển đổi Agent:"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton(f"{agy_active}🤖 Antigravity", callback_data="set_agent_antigravity"),
+                InlineKeyboardButton(f"{codex_active}⚡ OpenAI Codex", callback_data="set_agent_codex"),
+            ],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        ]
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data in ("set_agent_antigravity", "set_agent_codex"):
+        new_agent = AgentType.ANTIGRAVITY if data == "set_agent_antigravity" else AgentType.CODEX
+        agent_mgr.set_active_agent_type(user.id, new_agent)
+        runner = agent_mgr.get_active_runner(user.id)
+        session = agent_mgr.get_session(user.id, new_agent)
+
+        msg = (
+            f"✅ **Đã chuyển sang {runner.display_name}!**\n\n"
+            f"🧠 **Model:** `{session.model}`\n"
+            f"⚡ **Effort:** `{session.effort}`\n"
+            f"💬 **Session ID:** `{session.conversation_id or 'Phiên mới'}`"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
+                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+            ]
+        ]
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data == "menu_settings":
+        msg, reply_markup = build_model_settings_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data.startswith("set_model_"):
+        new_model = data.replace("set_model_", "")
+        agent_mgr.set_model(user.id, new_model)
+        msg, reply_markup = build_model_settings_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data.startswith("set_effort_"):
+        new_effort = data.replace("set_effort_", "")
+        agent_mgr.set_effort(user.id, new_effort)
+        msg, reply_markup = build_model_settings_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data.startswith("set_mode_"):
+        new_mode = data.replace("set_mode_", "")
+        agent_mgr.set_mode(user.id, new_mode)
+        msg, reply_markup = build_model_settings_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data == "menu_workspace":
         current_ws = workspace_mgr.get_current_workspace(user.id)
         known_ws = workspace_mgr.get_known_workspaces()
         keyboard = []
@@ -473,8 +648,8 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             is_active = (path.lower() == current_ws.lower())
             btn_text = f"{'✅ ' if is_active else '📁 '}{folder_name}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"ws_select_{idx}")])
-        keyboard.append([InlineKeyboardButton("📂 Danh sách file", callback_data="ws_list_files")])
-        keyboard.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")])
+        keyboard.append([InlineKeyboardButton("📂 Xem file (/ls)", callback_data="ws_list_files")])
+        keyboard.append([InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")])
 
         await query.edit_message_text(
             f"📂 **CHỌN WORKSPACE**\nHiện tại: `{current_ws}`",
@@ -505,14 +680,22 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "menu_status":
         ws = workspace_mgr.get_current_workspace(user.id)
-        session = agy_runner.get_session(user.id)
-        status_text = SystemUtils.get_system_status(ws, session.conversation_id or "")
+        active_type = agent_mgr.get_active_agent_type(user.id)
+        runner = agent_mgr.get_active_runner(user.id)
+        session = agent_mgr.get_session(user.id, active_type)
+
+        status_text = SystemUtils.get_system_status(
+            current_workspace=ws,
+            conversation_id=session.conversation_id or "",
+            active_agent=runner.display_name,
+            model_name=session.model,
+        )
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
                 InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
             ],
-            [InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
         ]
         try:
             await query.edit_message_text(
@@ -534,70 +717,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         else:
             await query.message.reply_text(f"❌ {result}")
 
-    elif data == "menu_settings":
-        session = agy_runner.get_session(user.id)
-        msg = (
-            f"⚙️ **CÀI ĐẶT CẤU HÌNH ANTIGRAVITY**\n\n"
-            f"🧠 **Model:** `{session.model}`\n"
-            f"⚡ **Effort:** `{session.effort}`\n"
-            f"🛠️ **Mode:** `{session.mode}`"
-        )
-        keyboard = [
-            [
-                InlineKeyboardButton("⚡ Gemini 3.7 Flash", callback_data="set_model_Gemini 3.7 Flash (High)"),
-                InlineKeyboardButton("🧠 Gemini 3.1 Pro", callback_data="set_model_Gemini 3.1 Pro (High)"),
-            ],
-            [
-                InlineKeyboardButton("🎭 Claude Sonnet 4.6", callback_data="set_model_Claude Sonnet 4.6 (Thinking)"),
-                InlineKeyboardButton("🦁 Claude Opus 4.6", callback_data="set_model_Claude Opus 4.6 (Thinking)"),
-            ],
-            [
-                InlineKeyboardButton("Effort: High 🔴", callback_data="set_effort_high"),
-                InlineKeyboardButton("Effort: Medium 🟡", callback_data="set_effort_medium"),
-                InlineKeyboardButton("Effort: Low 🟢", callback_data="set_effort_low"),
-            ],
-            [
-                InlineKeyboardButton("Mode: Accept Edits", callback_data="set_mode_accept-edits"),
-                InlineKeyboardButton("Mode: Plan", callback_data="set_mode_plan"),
-            ],
-            [InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")],
-        ]
-        await query.edit_message_text(
-            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
-        )
-
-    elif data.startswith("set_model_"):
-        new_model = data.replace("set_model_", "")
-        agy_runner.set_model(user.id, new_model)
-        await query.edit_message_text(
-            f"✅ **Đã chuyển Model thành:** `{new_model}`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cấu hình", callback_data="menu_settings")]]),
-        )
-
-    elif data.startswith("set_effort_"):
-        new_effort = data.replace("set_effort_", "")
-        agy_runner.set_effort(user.id, new_effort)
-        session = agy_runner.get_session(user.id)
-        await query.edit_message_text(
-            f"✅ **Đã chuyển Effort thành:** `{new_effort}`\n🧠 **Model cập nhật:** `{session.model}`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cấu hình", callback_data="menu_settings")]]),
-        )
-
-    elif data.startswith("set_mode_"):
-        new_mode = data.replace("set_mode_", "")
-        agy_runner.set_mode(user.id, new_mode)
-        await query.edit_message_text(
-            f"✅ **Đã chuyển Mode thành:** `{new_mode}`",
-            parse_mode=ParseMode.MARKDOWN,
-            reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Cấu hình", callback_data="menu_settings")]]),
-        )
-
     elif data == "menu_reset":
-        agy_runner.reset_session(user.id)
+        active_type = agent_mgr.get_active_agent_type(user.id)
+        runner = agent_mgr.get_active_runner(user.id)
+        agent_mgr.reset_session(user.id, active_type)
         await query.edit_message_text(
-            "🔄 **Đã xóa ngữ cảnh cũ!**\nTin nhắn tiếp theo sẽ bắt đầu một phiên Antigravity mới.",
+            f"🔄 **Đã xóa ngữ cảnh cũ của {runner.display_name}!**\nTin nhắn tiếp theo sẽ bắt đầu một phiên mới.",
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")]]),
         )
@@ -606,6 +731,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         help_text = (
             f"📖 **HƯỚNG DẪN NHANH**\n\n"
             f"• Nhắn trực tiếp yêu cầu lập trình cho Bot.\n"
+            f"• Dùng `/agent` để chuyển đổi Antigravity / Codex.\n"
             f"• Dùng `/stop` để hủy lệnh đang chạy.\n"
             f"• Dùng `/workspace` để đổi thư mục code.\n"
             f"• Dùng `/screenshot` để xem màn hình PC."
@@ -614,34 +740,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             help_text,
             parse_mode=ParseMode.MARKDOWN,
             reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")]]),
-        )
-
-    elif data == "menu_main":
-        ws = workspace_mgr.get_current_workspace(user.id)
-        session = agy_runner.get_session(user.id)
-        msg = (
-            f"🤖 **ANTIGRAVITY TELEGRAM CONTROLLER**\n\n"
-            f"📂 **Workspace:** `{ws}`\n"
-            f"🧠 **Model:** `{session.model}`\n"
-            f"⚡ **Effort:** `{session.effort}` | **Mode:** `{session.mode}`\n\n"
-            f"👇 **Chọn chức năng nhanh:**"
-        )
-        keyboard = [
-            [
-                InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
-                InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
-            ],
-            [
-                InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
-                InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-            ],
-            [
-                InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
-                InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
-            ],
-        ]
-        await query.edit_message_text(
-            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
 
@@ -671,7 +769,7 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
             await update.message.reply_text(
                 f"📥 **Đã lưu tệp:** `{file_name}`\n"
                 f"📂 **Vào thư mục:** `{target_dir}`\n\n"
-                f"💡 Bạn có thể yêu cầu Antigravity xử lý tệp này ngay bây giờ.",
+                f"💡 Bạn có thể yêu cầu Agent xử lý tệp này ngay bây giờ.",
                 parse_mode=ParseMode.MARKDOWN,
             )
         elif photo:
@@ -694,7 +792,7 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
 # ==========================================
 
 async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Nhận tin nhắn văn bản và gửi tới Antigravity CLI."""
+    """Nhận tin nhắn văn bản và chuyển tới Agent Engine đang kích hoạt."""
     user = update.effective_user
     if not is_authorized(user.id):
         await send_unauthorized_msg(update)
@@ -705,9 +803,9 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
         return
 
     # Kiểm tra xem có tác vụ nào đang chạy cho user này không
-    if agy_runner.is_running(user.id):
+    if agent_mgr.is_running(user.id):
         await update.message.reply_text(
-            "⏳ **Antigravity đang xử lý một tác vụ khác.**\n"
+            "⏳ **Agent đang xử lý một tác vụ khác.**\n"
             "Vui lòng đợi hoặc gõ `/stop` để hủy tác vụ hiện tại.",
             parse_mode=ParseMode.MARKDOWN,
         )
@@ -715,15 +813,15 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
 
     current_ws = workspace_mgr.get_current_workspace(user.id)
     chat_id = update.effective_chat.id
+    runner = agent_mgr.get_active_runner(user.id)
 
     # Gửi tin nhắn trạng thái ban đầu
     status_msg = await update.message.reply_text(
-        "⏳ **Đang gửi yêu cầu tới Antigravity...**\n"
+        f"⏳ **Đang gửi yêu cầu tới {runner.display_name}...**\n"
         f"📂 `{current_ws}`",
         parse_mode=ParseMode.MARKDOWN,
     )
 
-    # Biến theo dõi cập nhật tin nhắn trạng thái (tránh flood limit của Telegram)
     last_status_text = ""
     last_update_time = time.time()
     final_result_event = None
@@ -731,7 +829,7 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
     async def update_status(new_text: str):
         nonlocal last_status_text, last_update_time
         now = time.time()
-        # Cập nhật tối đa 1 lần mỗi 1.5 giây
+        # Cập nhật tối đa 1 lần mỗi 1.5 giây để tránh rate limit
         if new_text != last_status_text and (now - last_update_time > 1.5):
             last_status_text = new_text
             last_update_time = now
@@ -740,10 +838,9 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
             except Exception:
                 pass
 
-    # Tạo tác vụ typing định kỳ trong lúc chờ
     async def keep_typing():
         try:
-            while agy_runner.is_running(user.id):
+            while agent_mgr.is_running(user.id):
                 await context.bot.send_chat_action(chat_id=chat_id, action=ChatAction.TYPING)
                 await asyncio.sleep(4.5)
         except Exception:
@@ -752,15 +849,16 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
     typing_task = asyncio.create_task(keep_typing())
 
     try:
-        async for event in agy_runner.execute_prompt(
+        async for event in agent_mgr.execute_prompt(
             user_id=user.id,
             prompt=prompt_text,
             workspace_dir=current_ws,
         ):
             if event.event_type == "init":
+                conv_short = event.conversation_id[:8] if event.conversation_id else "new"
                 await update_status(
-                    f"🤖 **Antigravity đã khởi động**\n"
-                    f"💬 Session: `{event.conversation_id[:8]}...`\n"
+                    f"{runner.emoji} **{runner.display_name} đã khởi động**\n"
+                    f"💬 Session: `{conv_short}...`\n"
                     f"📂 `{current_ws}`"
                 )
 
@@ -795,8 +893,15 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
         duration = final_result_event.duration_seconds or 0.0
         tokens = final_result_event.tokens_used or 0
         conv_id = final_result_event.conversation_id or ""
+        conv_short = conv_id[:8] if conv_id else ""
 
-        footer = f"\n\n━━━━━━━━━━━━━━━━━━\n⏱️ `{duration:.1f}s` | 🪙 `{tokens:,} tokens` | 💬 `{conv_id[:8]}...`"
+        footer = (
+            f"\n\n━━━━━━━━━━━━━━━━━━\n"
+            f"{runner.emoji} **{runner.display_name}** | ⏱️ `{duration:.1f}s` | 🪙 `{tokens:,} tokens`"
+        )
+        if conv_short:
+            footer += f" | 💬 `{conv_short}...`"
+
         full_text = final_result_event.content + footer
 
         await send_smart_message(
@@ -806,7 +911,7 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
             reply_to_message_id=update.message.message_id,
         )
     else:
-        await update.message.reply_text("✅ Tác vụ đã hoàn thành mà không có văn bản trả về.")
+        await update.message.reply_text(f"✅ {runner.display_name} đã hoàn thành tác vụ mà không có văn bản trả về.")
 
 
 # ==========================================
@@ -825,18 +930,19 @@ def main():
         sys.exit(1)
 
     print("=" * 60)
-    print("🚀 KHỞI ĐỘNG ANTIGRAVITY TELEGRAM BOT SERVER")
+    print("🚀 KHỞI ĐỘNG DUAL AGENT TELEGRAM BOT SERVER")
     print(f"📂 Workspace mặc định: {Config.DEFAULT_WORKSPACE}")
-    print(f"🧠 Model: {Config.DEFAULT_MODEL}")
+    print(f"🤖 Agent mặc định: {Config.DEFAULT_AGENT.upper()}")
     print(f"🛠️ agy path: {Config.AGY_PATH}")
+    print(f"⚡ codex path: {Config.CODEX_PATH}")
     print(f"👥 Allowed Users: {Config.ALLOWED_USER_IDS or 'Chưa có (sẽ thông báo khi có người nhắn)'}")
     print("=" * 60)
 
-    # Khởi tạo Application
     app = Application.builder().token(token).build()
 
-    # Đăng ký các Command Handlers
+    # Đăng ký Command Handlers
     app.add_handler(CommandHandler(["start"], cmd_start))
+    app.add_handler(CommandHandler(["agent", "engine"], cmd_agent))
     app.add_handler(CommandHandler(["help"], cmd_help))
     app.add_handler(CommandHandler(["new", "reset"], cmd_reset))
     app.add_handler(CommandHandler(["stop", "cancel"], cmd_stop))
@@ -855,7 +961,7 @@ def main():
     # Đăng ký File Upload Handler
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_document_upload))
 
-    # Đăng ký Message Handler cho các prompt thông thường
+    # Đăng ký Message Handler cho prompt
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt_message))
 
     async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:

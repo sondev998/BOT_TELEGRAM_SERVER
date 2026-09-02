@@ -10,28 +10,60 @@ class WorkspaceManager:
 
     def __init__(self):
         self._user_workspaces: dict[int, str] = {}
-        self._settings_path = Path(
+        self._agy_settings_path = Path(
             os.path.expandvars(r"%USERPROFILE%\.gemini\antigravity-cli\settings.json")
+        )
+        self._codex_config_path = Path(
+            os.path.expanduser("~/.codex/config.toml")
         )
 
     def get_known_workspaces(self) -> list[str]:
-        """Đọc danh sách các workspace đã được cấu hình từ settings.json của Antigravity."""
+        """Đọc danh sách các workspace đã được cấu hình từ Antigravity và Codex."""
         workspaces: list[str] = []
+        seen_lower: set[str] = set()
+
+        def add_workspace(path_str: str, insert_first: bool = False):
+            try:
+                clean_p = str(Path(path_str.strip()).resolve())
+                if clean_p.lower() not in seen_lower and os.path.isdir(clean_p):
+                    seen_lower.add(clean_p.lower())
+                    if insert_first:
+                        workspaces.insert(0, clean_p)
+                    else:
+                        workspaces.append(clean_p)
+            except Exception:
+                pass
+
+        # 1. Thêm workspace mặc định
+        if Config.DEFAULT_WORKSPACE:
+            add_workspace(Config.DEFAULT_WORKSPACE)
+
+        # 2. Đọc từ Antigravity settings.json
         try:
-            if self._settings_path.exists():
-                with open(self._settings_path, "r", encoding="utf-8") as f:
+            if self._agy_settings_path.exists():
+                with open(self._agy_settings_path, "r", encoding="utf-8") as f:
                     data = json.load(f)
                     trusted = data.get("trustedWorkspaces", [])
                     for p in trusted:
-                        if p not in workspaces and os.path.isdir(p):
-                            workspaces.append(p)
+                        add_workspace(p)
         except Exception:
             pass
 
-        # Thêm workspace mặc định nếu chưa có
-        default_ws = Config.DEFAULT_WORKSPACE
-        if default_ws and default_ws not in workspaces and os.path.isdir(default_ws):
-            workspaces.insert(0, default_ws)
+        # 3. Đọc từ OpenAI Codex config.toml
+        try:
+            if self._codex_config_path.exists():
+                try:
+                    import tomllib
+
+                    with open(self._codex_config_path, "rb") as f:
+                        data = tomllib.load(f)
+                        projects = data.get("projects", {})
+                        for p in projects.keys():
+                            add_workspace(p)
+                except Exception:
+                    pass
+        except Exception:
+            pass
 
         return workspaces
 
@@ -43,7 +75,7 @@ class WorkspaceManager:
         # Trả về default workspace
         default_ws = Config.DEFAULT_WORKSPACE
         if default_ws and os.path.isdir(default_ws):
-            return default_ws
+            return str(Path(default_ws).resolve())
         return str(Path.cwd())
 
     def set_workspace(self, user_id: int, path: str) -> tuple[bool, str]:
