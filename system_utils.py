@@ -8,6 +8,8 @@ from datetime import timedelta
 import psutil
 from PIL import ImageGrab
 
+from account_manager import account_mgr
+
 
 class SystemUtils:
     """Công cụ theo dõi hệ thống máy tính và chạy lệnh trực tiếp."""
@@ -56,13 +58,19 @@ class SystemUtils:
             else "  Không lấy được thông tin ổ đĩa"
         )
 
+        # Thông tin tài khoản
+        agy_acc = account_mgr.get_antigravity_account()
+        codex_acc = account_mgr.get_codex_account()
+
         agent_info = f"🤖 **Agent Đang Dùng:** `{active_agent}`\n" if active_agent else ""
         model_info = f"🧠 **Model:** `{model_name}`\n" if model_name else ""
 
         status_text = (
-            f"🖥️ **THÔNG TIN HỆ THỐNG PC**\n\n"
+            f"🖥️ **THÔNG TIN HỆ THỐNG PC & TÀI KHOẢN**\n\n"
             f"{agent_info}"
             f"{model_info}"
+            f"👤 **Google Account:** `{agy_acc.email}` ({agy_acc.plan_type})\n"
+            f"⚡ **Codex Account:** `{codex_acc.email}` (Gói {codex_acc.plan_type})\n\n"
             f"💻 **Hệ điều hành:** {platform.system()} {platform.release()} ({platform.machine()})\n"
             f"⏱️ **Bot Uptime:** `{uptime_str}`\n"
             f"⚡ **CPU ({cpu_count} cores):** `{cpu_percent}%`\n"

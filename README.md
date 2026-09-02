@@ -66,6 +66,7 @@ DEFAULT_AGENT=antigravity # hoặc codex
 | **Nhắn tin trực tiếp** | Gửi yêu cầu lập trình / xử lý tác vụ cho Agent đang kích hoạt |
 | `/start` | Mở bảng điều khiển và menu phím tắt |
 | `/agent` | Chuyển đổi giữa **🤖 Google Antigravity** và **⚡ OpenAI Codex** |
+| `/account` | Xem chi tiết thông tin tài khoản (Email, Gói Free/Plus/Pro/Consumer) |
 | `/model` | Cấu hình Model AI (Gemini, Claude, GPT, o3...) và Reasoning Effort |
 | `/help` | Xem hướng dẫn chi tiết các lệnh |
 | `/new` hoặc `/reset` | Xóa ngữ cảnh cũ và bắt đầu một phiên chat mới |

@@ -21,6 +21,7 @@ from telegram.ext import (
     filters,
 )
 
+from account_manager import account_mgr
 from agent_base import AgentType
 from agent_manager import agent_mgr
 from config import Config
@@ -138,25 +139,21 @@ async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: 
 
 def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Tạo bàn phím menu chính."""
-    active_agent = agent_mgr.get_active_agent_type(user_id)
-    agent_switch_label = (
-        "⚡ Chuyển sang Codex" if active_agent == AgentType.ANTIGRAVITY else "🤖 Chuyển sang Antigravity"
-    )
-
     keyboard = [
         [
             InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
             InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
         ],
         [
+            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
             InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
+        ],
+        [
             InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
-        ],
-        [
             InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
         ],
         [
+            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
             InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
         ],
     ]
@@ -173,10 +170,19 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
     agent_badge = f"{runner.emoji} **{runner.display_name}**"
     session_id_display = session.conversation_id[:12] + "..." if session.conversation_id else "Chưa có (sẽ tạo mới)"
 
+    # Lấy tài khoản tương ứng
+    if active_type == AgentType.ANTIGRAVITY:
+        acc = account_mgr.get_antigravity_account()
+        acc_text = f"👤 **Google Account:** `{acc.email}`"
+    else:
+        acc = account_mgr.get_codex_account()
+        acc_text = f"⚡ **Codex Account:** `{acc.email}` (Gói `{acc.plan_type}`)"
+
     msg = (
         f"🤖 **DUAL AGENT TELEGRAM CONTROLLER**\n\n"
         f"Chào mừng **{user_first_name}**! Bạn có thể lập trình, fix bug và quản trị PC từ xa.\n\n"
         f"🛠️ **Agent Đang Dùng:** {agent_badge}\n"
+        f"{acc_text}\n"
         f"📂 **Workspace:** `{ws}`\n"
         f"🧠 **Model:** `{session.model or 'Mặc định'}`\n"
         f"⚡ **Effort:** `{session.effort or 'Mặc định'}`\n"
@@ -216,10 +222,15 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     agy_active = "✅ " if active_type == AgentType.ANTIGRAVITY else "▫️ "
     codex_active = "✅ " if active_type == AgentType.CODEX else "▫️ "
 
+    agy_acc = account_mgr.get_antigravity_account()
+    codex_acc = account_mgr.get_codex_account()
+
     msg = (
         f"🔀 **CHỌN AGENT ENGINE ĐIỀU KHIỂN**\n\n"
-        f"• 🤖 **Google Antigravity:** Tối ưu hóa cho Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, đa chế độ thực thi (Accept-Edits, Plan).\n\n"
-        f"• ⚡ **OpenAI Codex:** Tối ưu hóa cho GPT-5.6 Terra, o3, o3-mini, GPT-4.1, hỗ trợ sandbox elevated và MCP Tools.\n\n"
+        f"• 🤖 **Google Antigravity:** Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, Accept-Edits & Plan.\n"
+        f"  👤 Account: `{agy_acc.email}`\n\n"
+        f"• ⚡ **OpenAI Codex:** GPT-5.6 Terra, o3, o3-mini, elevated sandbox & MCP.\n"
+        f"  ⚡ Account: `{codex_acc.email}` (Gói `{codex_acc.plan_type}`)\n\n"
         f"👇 Nhấn chọn Agent bạn muốn sử dụng:"
     )
 
@@ -228,11 +239,34 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton(f"{agy_active}🤖 Antigravity", callback_data="set_agent_antigravity"),
             InlineKeyboardButton(f"{codex_active}⚡ OpenAI Codex", callback_data="set_agent_codex"),
         ],
-        [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        [
+            InlineKeyboardButton("👤 Xem chi tiết tài khoản", callback_data="menu_account"),
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
     ]
 
     await update.message.reply_text(
         msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+    )
+
+
+async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /account hoặc /profile - Xem thông tin tài khoản."""
+    user = update.effective_user
+    if not is_authorized(user.id):
+        await send_unauthorized_msg(update)
+        return
+
+    summary = account_mgr.get_all_accounts_summary()
+    keyboard = [
+        [
+            InlineKeyboardButton("🔄 Làm mới", callback_data="menu_account"),
+            InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+        ],
+        [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+    ]
+    await update.message.reply_text(
+        summary, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
     )
 
 
@@ -251,6 +285,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"🎛️ **Các lệnh điều khiển:**\n"
         f"• `/start` - Mở bảng điều khiển chính\n"
         f"• `/agent` - Đổi giữa **🤖 Antigravity** và **⚡ OpenAI Codex**\n"
+        f"• `/account` - Xem thông tin Email & Gói tài khoản (Free, Pro, Plus...)\n"
         f"• `/model` - Đổi Model AI và Reasoning Effort\n"
         f"• `/workspace` hoặc `/ws` - Xem và đổi thư mục dự án\n"
         f"• `/cd <đường dẫn>` - Chuyển sang thư mục bất kỳ trên máy tính\n"
@@ -302,7 +337,7 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lệnh /status - Xem tài nguyên PC."""
+    """Lệnh /status - Xem tài nguyên PC và tài khoản."""
     user = update.effective_user
     if not is_authorized(user.id):
         await send_unauthorized_msg(update)
@@ -323,9 +358,12 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
-            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
+            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
         ],
-        [InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")],
+        [
+            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
     ]
     await update.message.reply_text(
         status_text,
@@ -382,7 +420,7 @@ async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"ws_select_{idx}")])
 
     keyboard.append([InlineKeyboardButton("📂 Xem danh sách file (/ls)", callback_data="ws_list_files")])
-    keyboard.append([InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_main")])
+    keyboard.append([InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")])
 
     await update.message.reply_text(
         "\n".join(lines),
@@ -481,9 +519,17 @@ def build_model_settings_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
     runner = agent_mgr.get_active_runner(user_id)
     session = agent_mgr.get_session(user_id, active_type)
 
+    if active_type == AgentType.ANTIGRAVITY:
+        acc = account_mgr.get_antigravity_account()
+        acc_badge = f"👤 Account: `{acc.email}`"
+    else:
+        acc = account_mgr.get_codex_account()
+        acc_badge = f"⚡ Account: `{acc.email}` (Gói `{acc.plan_type}`)"
+
     msg = (
         f"⚙️ **CÀI ĐẶT CẤU HÌNH {runner.display_name.upper()}**\n\n"
         f"🤖 **Agent:** {runner.display_name}\n"
+        f"{acc_badge}\n"
         f"🧠 **Model hiện tại:** `{session.model or 'Mặc định'}`\n"
         f"⚡ **Reasoning Effort:** `{session.effort or 'Mặc định'}`\n"
     )
@@ -523,8 +569,9 @@ def build_model_settings_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 
     keyboard.append([
         InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
-        InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
     ])
+    keyboard.append([InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")])
 
     return msg, InlineKeyboardMarkup(keyboard)
 
@@ -570,10 +617,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         agy_active = "✅ " if active_type == AgentType.ANTIGRAVITY else "▫️ "
         codex_active = "✅ " if active_type == AgentType.CODEX else "▫️ "
 
+        agy_acc = account_mgr.get_antigravity_account()
+        codex_acc = account_mgr.get_codex_account()
+
         msg = (
             f"🔀 **CHỌN AGENT ENGINE ĐIỀU KHIỂN**\n\n"
-            f"• 🤖 **Google Antigravity:** Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, đa chế độ thực thi.\n\n"
-            f"• ⚡ **OpenAI Codex:** GPT-5.6 Terra, o3, o3-mini, GPT-4.1, elevated sandbox & MCP.\n\n"
+            f"• 🤖 **Google Antigravity:** Gemini 3.7 Flash/Pro, Claude Sonnet 4.6, Accept-Edits & Plan.\n"
+            f"  👤 Account: `{agy_acc.email}`\n\n"
+            f"• ⚡ **OpenAI Codex:** GPT-5.6 Terra, o3, o3-mini, elevated sandbox & MCP.\n"
+            f"  ⚡ Account: `{codex_acc.email}` (Gói `{codex_acc.plan_type}`)\n\n"
             f"👇 Nhấn để chuyển đổi Agent:"
         )
         keyboard = [
@@ -581,7 +633,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton(f"{agy_active}🤖 Antigravity", callback_data="set_agent_antigravity"),
                 InlineKeyboardButton(f"{codex_active}⚡ OpenAI Codex", callback_data="set_agent_codex"),
             ],
-            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+            [
+                InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
+                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+            ],
         ]
         await query.edit_message_text(
             msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
@@ -602,11 +657,25 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = [
             [
                 InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
-                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
-            ]
+                InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
+            ],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
         ]
         await query.edit_message_text(
             msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+        )
+
+    elif data == "menu_account":
+        summary = account_mgr.get_all_accounts_summary()
+        keyboard = [
+            [
+                InlineKeyboardButton("🔄 Làm mới", callback_data="menu_account"),
+                InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+            ],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        ]
+        await query.edit_message_text(
+            summary, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
         )
 
     elif data == "menu_settings":
@@ -693,9 +762,12 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
-                InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
+                InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
             ],
-            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+            [
+                InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
+                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+            ],
         ]
         try:
             await query.edit_message_text(
@@ -732,6 +804,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"📖 **HƯỚNG DẪN NHANH**\n\n"
             f"• Nhắn trực tiếp yêu cầu lập trình cho Bot.\n"
             f"• Dùng `/agent` để chuyển đổi Antigravity / Codex.\n"
+            f"• Dùng `/account` để xem thông tin tài khoản & gói dịch vụ.\n"
             f"• Dùng `/stop` để hủy lệnh đang chạy.\n"
             f"• Dùng `/workspace` để đổi thư mục code.\n"
             f"• Dùng `/screenshot` để xem màn hình PC."
@@ -943,6 +1016,7 @@ def main():
     # Đăng ký Command Handlers
     app.add_handler(CommandHandler(["start"], cmd_start))
     app.add_handler(CommandHandler(["agent", "engine"], cmd_agent))
+    app.add_handler(CommandHandler(["account", "profile"], cmd_account))
     app.add_handler(CommandHandler(["help"], cmd_help))
     app.add_handler(CommandHandler(["new", "reset"], cmd_reset))
     app.add_handler(CommandHandler(["stop", "cancel"], cmd_stop))
