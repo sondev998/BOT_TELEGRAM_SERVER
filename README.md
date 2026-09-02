@@ -82,16 +82,7 @@ flowchart TD
 
 ## 🚀 Hướng dẫn Cài đặt & Khởi chạy (Chỉ 2 phút)
 
-### Bước 1: Cấu hình file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env)
-Mở file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env) trong thư mục `E:\TELEGRAM_BOT\CocosDevBot\` và cập nhật:
-```env
-TELEGRAM_BOT_TOKEN=Token_Telegram_Của_Bạn
-ALLOWED_USER_IDS=ID_Telegram_Của_Bạn
-DEFAULT_AGENT=antigravity # hoặc codex
-AUTH_AUTO_LOCK_MINUTES=30
-
-
-TẠO BOT: 
+### Bước 1: TẠO BOT TELEGRAM 
 Mở Telegram và tìm: @BotFather
 BotFather là bot chính thức dùng để tạo và quản lý Telegram Bot: /newbot
 BotFather sẽ hỏi: Alright, a new bot. How are we going to call it?
@@ -99,6 +90,19 @@ Nhập tên hiển thị, Ví dụ: Antigravity Controller
 Sau đó BotFather yêu cầu username, Ví dụ: antigravity_controller_bot
 Sau khi tạo thành công, BotFather trả về một Token_Telegram_Của_Bạn dạng: 1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
 Nhắn 1 tin nhắn bất kỳ để bot trả lời lại với thông tin chứa ID_Telegram_Của_Bạn, có dạng: 1234567890
+
+
+
+###
+
+
+### Bước 2: Cấu hình file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env)
+Mở file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env) trong thư mục `E:\TELEGRAM_BOT\CocosDevBot\` và cập nhật:
+```env
+TELEGRAM_BOT_TOKEN=Token_Telegram_Của_Bạn
+ALLOWED_USER_IDS=ID_Telegram_Của_Bạn
+DEFAULT_AGENT=antigravity # hoặc codex
+AUTH_AUTO_LOCK_MINUTES=30
 
 ```
 
@@ -111,7 +115,7 @@ Nhắn 1 tin nhắn bất kỳ để bot trả lời lại với thông tin ch�
 
 ---
 
-### Bước 2: Khởi động Bot
+### Bước 3: Khởi động Bot
 - **Cách 1 (Cửa sổ dòng lệnh):** Nhấp đúp chuột vào file [`start_bot.bat`](file:///E:/TELEGRAM_BOT/CocosDevBot/start_bot.bat).
 - **Cách 2 (Chạy ngầm dưới nền Windows):** Nhấp đúp chuột vào file [`start_bot_background.vbs`](file:///E:/TELEGRAM_BOT/CocosDevBot/start_bot_background.vbs).
 - **Tắt bot:** Nhấp đúp chuột vào file [`stop_bot.bat`](file:///E:/TELEGRAM_BOT/CocosDevBot/stop_bot.bat).
