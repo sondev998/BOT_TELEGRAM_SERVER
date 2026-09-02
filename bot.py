@@ -1,4 +1,5 @@
 import asyncio
+import atexit
 import io
 import logging
 import os
@@ -9,6 +10,7 @@ from telegram import (
     InlineKeyboardButton,
     InlineKeyboardMarkup,
     Update,
+    WebAppInfo,
 )
 from telegram.constants import ChatAction, ParseMode
 from telegram.error import BadRequest, Conflict, TelegramError
@@ -24,6 +26,8 @@ from telegram.ext import (
 from account_manager import account_mgr
 from agent_base import AgentType
 from agent_manager import agent_mgr
+from cocos_detector import cocos_detector
+from cocos_preview_manager import CocosPreviewState, cocos_preview_mgr
 from config import Config
 from system_utils import SystemUtils
 from workspace_manager import workspace_mgr
@@ -129,7 +133,6 @@ async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: 
                 reply_to_message_id=reply_to_message_id,
             )
         except BadRequest:
-            # Markdown bị lỗi định dạng -> gửi dạng plain text
             await bot.send_message(
                 chat_id=chat_id,
                 text=chunk,
@@ -141,19 +144,22 @@ def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Tạo bàn phím menu chính."""
     keyboard = [
         [
-            InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
             InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
         ],
         [
-            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
-            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
-        ],
-        [
+            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
             InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
-            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
         ],
         [
+            InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
+            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
+        ],
+        [
+            InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
             InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
+        ],
+        [
             InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
         ],
     ]
@@ -178,11 +184,16 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
         acc = account_mgr.get_codex_account()
         acc_text = f"⚡ **Codex Account:** `{acc.email}` (Gói `{acc.plan_type}`)"
 
+    # Kiểm tra trạng thái Cocos Preview
+    cocos_st = cocos_preview_mgr.get_status_data()
+    cocos_badge = "🟢 Đang chạy" if cocos_st["status"] == CocosPreviewState.RUNNING else "⚪ Tắt"
+
     msg = (
-        f"🤖 **DUAL AGENT TELEGRAM CONTROLLER**\n\n"
-        f"Chào mừng **{user_first_name}**! Bạn có thể lập trình, fix bug và quản trị PC từ xa.\n\n"
+        f"🤖 **DUAL AGENT & COCOS PREVIEW CONTROLLER**\n\n"
+        f"Chào mừng **{user_first_name}**! Bạn có thể lập trình, fix bug và preview game Cocos từ xa.\n\n"
         f"🛠️ **Agent Đang Dùng:** {agent_badge}\n"
         f"{acc_text}\n"
+        f"🎮 **Cocos Preview:** `{cocos_badge}`\n"
         f"📂 **Workspace:** `{ws}`\n"
         f"🧠 **Model:** `{session.model or 'Mặc định'}`\n"
         f"⚡ **Effort:** `{session.effort or 'Mặc định'}`\n"
@@ -190,6 +201,83 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
         f"👇 **Chọn chức năng nhanh bên dưới:**"
     )
     return msg
+
+
+def build_cocos_preview_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện điều khiển Cocos Creator Preview."""
+    ws = workspace_mgr.get_current_workspace(user_id)
+    st = cocos_preview_mgr.get_status_data()
+    info = cocos_detector.detect_project(ws)
+
+    # 1. Trường hợp đang chạy (RUNNING)
+    if st["status"] == CocosPreviewState.RUNNING and st["public_url"]:
+        msg = (
+            f"🎮 **COCOS CREATOR PREVIEW**\n\n"
+            f"🟢 **Trạng thái:** `Đang chạy (Running)`\n"
+            f"📂 **Dự án:** `{st['project_name']}`\n"
+            f"🛠️ **Engine:** `Cocos Creator {st['cocos_version']}`\n"
+            f"🔌 **Cổng Local:** `{st['local_url']}`\n"
+            f"🌐 **Public HTTPS:** `{st['public_url']}`\n"
+            f"⏱️ **Uptime:** `{st['uptime']}`\n\n"
+            f"👇 **Nhấn nút bên dưới để mở game trong điện thoại:**"
+        )
+        keyboard = [
+            [
+                InlineKeyboardButton("🎮 OPEN PREVIEW", web_app=WebAppInfo(url=st["public_url"])),
+            ],
+            [
+                InlineKeyboardButton("🌐 Mở bằng Browser", url=st["public_url"]),
+                InlineKeyboardButton("🔄 Làm mới", callback_data="cocos_status"),
+            ],
+            [
+                InlineKeyboardButton("🔄 RESTART", callback_data="cocos_restart"),
+                InlineKeyboardButton("⏹ STOP", callback_data="cocos_stop"),
+            ],
+            [
+                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+            ],
+        ]
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    # 2. Trường hợp thư mục không phải là dự án Cocos
+    if not info.is_cocos:
+        msg = (
+            f"🎮 **COCOS CREATOR PREVIEW CONTROLLER**\n\n"
+            f"⚠️ **Thư mục hiện tại không phải là dự án Cocos Creator:**\n"
+            f"📂 `{ws}`\n\n"
+            f"💡 *Vui lòng chọn một thư mục dự án Cocos Creator (2.x / 3.x) trong danh sách Workspace trước khi bật Preview.*"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📁 Chọn Workspace Cocos", callback_data="menu_workspace")],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        ]
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    # 3. Trường hợp dự án Cocos nhưng chưa chạy (IDLE / ERROR / STOPPING)
+    status_label = "🔴 Lỗi: " + st["error_message"] if st["status"] == CocosPreviewState.ERROR else "⚪ Chưa chạy (IDLE)"
+    msg = (
+        f"🎮 **COCOS CREATOR PREVIEW CONTROLLER**\n\n"
+        f"📂 **Dự án:** `{info.project_name}`\n"
+        f"🛠️ **Phiên bản:** `Cocos Creator {info.engine_version}`\n"
+        f"📁 **Thư mục:** `{info.project_path}`\n"
+        f"⚙️ **Trình thực thi:** `{os.path.basename(info.executable_path) if info.executable_path else 'Chưa tìm thấy'}`\n\n"
+        f"📊 **Trạng thái:** `{status_label}`\n\n"
+        f"👇 Nhấn **START PREVIEW** để khởi động Preview Server & Cloudflare Tunnel:"
+    )
+
+    keyboard = [
+        [
+            InlineKeyboardButton("🚀 START PREVIEW", callback_data="cocos_start"),
+        ],
+        [
+            InlineKeyboardButton("📁 Đổi Workspace", callback_data="menu_workspace"),
+            InlineKeyboardButton("🔄 Làm mới", callback_data="cocos_status"),
+        ],
+        [
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
 
 
 # ==========================================
@@ -206,6 +294,19 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_main_dashboard_text(user.id, user.first_name)
     reply_markup = build_main_menu_keyboard(user.id)
 
+    await update.message.reply_text(
+        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+    )
+
+
+async def cmd_cocos_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /preview hoặc /cocos - Bảng điều khiển Cocos Creator Preview."""
+    user = update.effective_user
+    if not is_authorized(user.id):
+        await send_unauthorized_msg(update)
+        return
+
+    msg, reply_markup = build_cocos_preview_view(user.id)
     await update.message.reply_text(
         msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
     )
@@ -278,26 +379,27 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     help_text = (
-        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN DUAL AGENT BOT**\n\n"
-        f"💬 **Trò chuyện & Lập trình:**\n"
-        f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu cho bot (ví dụ: `Hãy viết script tải ảnh`, `Kiểm tra lỗi trong file main.py`, ...)\n"
-        f"• Bot sẽ gọi Agent đang chọn (Antigravity hoặc Codex) để tự động đọc/ghi file và thực thi lệnh.\n\n"
+        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN DUAL AGENT & COCOS BOT**\n\n"
+        f"🎮 **Cocos Creator Preview:**\n"
+        f"• Nhấn **🎮 Cocos Preview** hoặc gõ `/preview` để bật server preview game và mở tunnel Cloudflare HTTPS.\n"
+        f"• Nhấn **🎮 OPEN PREVIEW** để chơi game trực tiếp trong ứng dụng Telegram!\n\n"
+        f"💬 **Trò chuyện & Lập trình AI:**\n"
+        f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu cho bot để AI tự động code, sửa bug.\n\n"
         f"🎛️ **Các lệnh điều khiển:**\n"
         f"• `/start` - Mở bảng điều khiển chính\n"
+        f"• `/preview` hoặc `/cocos` - Mở bảng điều khiển Cocos Preview\n"
         f"• `/agent` - Đổi giữa **🤖 Antigravity** và **⚡ OpenAI Codex**\n"
-        f"• `/account` - Xem thông tin Email & Gói tài khoản (Free, Pro, Plus...)\n"
+        f"• `/account` - Xem thông tin Email & Gói tài khoản AI\n"
         f"• `/model` - Đổi Model AI và Reasoning Effort\n"
         f"• `/workspace` hoặc `/ws` - Xem và đổi thư mục dự án\n"
         f"• `/cd <đường dẫn>` - Chuyển sang thư mục bất kỳ trên máy tính\n"
         f"• `/new` hoặc `/reset` - Bắt đầu phiên trò chuyện mới\n"
-        f"• `/stop` - Hủy tác vụ đang chạy dở\n"
+        f"• `/stop` - Hủy tác vụ AI đang chạy dở\n"
         f"• `/status` - Xem CPU, RAM, Ổ cứng, Uptime máy tính\n"
         f"• `/screenshot` hoặc `/screen` - Chụp màn hình PC gửi về điện thoại\n"
         f"• `/cmd <lệnh>` - Chạy lệnh PowerShell trực tiếp trên PC\n"
         f"• `/ls [thư mục]` - Xem danh sách file trong workspace\n"
-        f"• `/view <file>` - Xem nội dung file ngay trên Telegram\n\n"
-        f"📥 **Gửi file/ảnh:**\n"
-        f"• Bạn có thể gửi file/ảnh trực tiếp qua Telegram, bot sẽ lưu thẳng vào thư mục làm việc hiện tại!"
+        f"• `/view <file>` - Xem nội dung file ngay trên Telegram"
     )
     await update.message.reply_text(help_text, parse_mode=ParseMode.MARKDOWN)
 
@@ -358,12 +460,13 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [
             InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
-            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
+            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
         ],
         [
+            InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
             InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
         ],
+        [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
     ]
     await update.message.reply_text(
         status_text,
@@ -419,7 +522,10 @@ async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE):
         btn_text = f"{'✅ ' if is_active else '📁 '}{folder_name}"
         keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"ws_select_{idx}")])
 
-    keyboard.append([InlineKeyboardButton("📂 Xem danh sách file (/ls)", callback_data="ws_list_files")])
+    keyboard.append([
+        InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
+        InlineKeyboardButton("📂 Xem file (/ls)", callback_data="ws_list_files"),
+    ])
     keyboard.append([InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")])
 
     await update.message.reply_text(
@@ -605,6 +711,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     data = query.data
 
+    # --- 1. MENU CHÍNH ---
     if data == "menu_main":
         msg = get_main_dashboard_text(user.id, user.first_name)
         reply_markup = build_main_menu_keyboard(user.id)
@@ -612,6 +719,67 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
         )
 
+    # --- 2. COCOS PREVIEW CONTROLLER ---
+    elif data == "cocos_preview" or data == "cocos_status":
+        msg, reply_markup = build_cocos_preview_view(user.id)
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            pass
+
+    elif data == "cocos_start":
+        ws = workspace_mgr.get_current_workspace(user.id)
+        info = cocos_detector.detect_project(ws)
+
+        if not info.is_cocos:
+            msg, reply_markup = build_cocos_preview_view(user.id)
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+            return
+
+        # Hiển thị tiến trình khởi động
+        await query.edit_message_text(
+            f"🎮 **ĐANG KHỞI ĐỘNG COCOS PREVIEW...**\n\n"
+            f"📂 Dự án: `{info.project_name}`\n"
+            f"🛠️ Engine: `Cocos Creator {info.engine_version}`\n\n"
+            f"⏳ *Đang bật Engine & Cloudflare Tunnel... Vui lòng đợi trong giây lát.*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        def progress_cb(text: str):
+            logger.info(f"[Cocos Progress] {text}")
+
+        success, res = await cocos_preview_mgr.start_preview(
+            workspace_path=ws,
+            status_callback=progress_cb,
+        )
+
+        msg, reply_markup = build_cocos_preview_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data == "cocos_stop":
+        await query.edit_message_text("⏳ Đang dừng Cocos Preview & Cloudflare Tunnel...")
+        await cocos_preview_mgr.stop_preview()
+        msg, reply_markup = build_cocos_preview_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    elif data == "cocos_restart":
+        ws = workspace_mgr.get_current_workspace(user.id)
+        await query.edit_message_text("🔄 Đang khởi động lại Cocos Preview...")
+        await cocos_preview_mgr.restart_preview(ws)
+        msg, reply_markup = build_cocos_preview_view(user.id)
+        await query.edit_message_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+
+    # --- 3. AGENT & MODEL SETTINGS ---
     elif data == "menu_agent":
         active_type = agent_mgr.get_active_agent_type(user.id)
         agy_active = "✅ " if active_type == AgentType.ANTIGRAVITY else "▫️ "
@@ -708,6 +876,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
         )
 
+    # --- 4. WORKSPACE & SYSTEM UTILS ---
     elif data == "menu_workspace":
         current_ws = workspace_mgr.get_current_workspace(user.id)
         known_ws = workspace_mgr.get_known_workspaces()
@@ -717,7 +886,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             is_active = (path.lower() == current_ws.lower())
             btn_text = f"{'✅ ' if is_active else '📁 '}{folder_name}"
             keyboard.append([InlineKeyboardButton(btn_text, callback_data=f"ws_select_{idx}")])
-        keyboard.append([InlineKeyboardButton("📂 Xem file (/ls)", callback_data="ws_list_files")])
+        keyboard.append([
+            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
+            InlineKeyboardButton("📂 Xem file (/ls)", callback_data="ws_list_files"),
+        ])
         keyboard.append([InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")])
 
         await query.edit_message_text(
@@ -735,7 +907,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             await query.edit_message_text(
                 f"✅ **Đã đổi Workspace thành:**\n`{target_ws}`",
                 parse_mode=ParseMode.MARKDOWN,
-                reply_markup=InlineKeyboardMarkup([[InlineKeyboardButton("⬅️ Quay lại", callback_data="menu_workspace")]]),
+                reply_markup=InlineKeyboardMarkup([
+                    [InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview")],
+                    [InlineKeyboardButton("⬅️ Danh sách Workspace", callback_data="menu_workspace")],
+                ]),
             )
 
     elif data == "ws_list_files":
@@ -762,12 +937,13 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         keyboard = [
             [
                 InlineKeyboardButton("🔄 Làm mới", callback_data="menu_status"),
-                InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
+                InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
             ],
             [
+                InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
                 InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
             ],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
         ]
         try:
             await query.edit_message_text(
@@ -802,9 +978,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     elif data == "menu_help":
         help_text = (
             f"📖 **HƯỚNG DẪN NHANH**\n\n"
+            f"• Nhấn **🎮 Cocos Preview** để mở game trên điện thoại.\n"
             f"• Nhắn trực tiếp yêu cầu lập trình cho Bot.\n"
             f"• Dùng `/agent` để chuyển đổi Antigravity / Codex.\n"
-            f"• Dùng `/account` để xem thông tin tài khoản & gói dịch vụ.\n"
+            f"• Dùng `/account` để xem thông tin tài khoản.\n"
             f"• Dùng `/stop` để hủy lệnh đang chạy.\n"
             f"• Dùng `/workspace` để đổi thư mục code.\n"
             f"• Dùng `/screenshot` để xem màn hình PC."
@@ -1003,11 +1180,12 @@ def main():
         sys.exit(1)
 
     print("=" * 60)
-    print("🚀 KHỞI ĐỘNG DUAL AGENT TELEGRAM BOT SERVER")
+    print("🚀 KHỞI ĐỘNG DUAL AGENT & COCOS PREVIEW TELEGRAM BOT")
     print(f"📂 Workspace mặc định: {Config.DEFAULT_WORKSPACE}")
     print(f"🤖 Agent mặc định: {Config.DEFAULT_AGENT.upper()}")
     print(f"🛠️ agy path: {Config.AGY_PATH}")
     print(f"⚡ codex path: {Config.CODEX_PATH}")
+    print(f"🌐 cloudflared path: {Config.CLOUDFLARED_PATH or 'Chưa tìm thấy'}")
     print(f"👥 Allowed Users: {Config.ALLOWED_USER_IDS or 'Chưa có (sẽ thông báo khi có người nhắn)'}")
     print("=" * 60)
 
@@ -1015,6 +1193,7 @@ def main():
 
     # Đăng ký Command Handlers
     app.add_handler(CommandHandler(["start"], cmd_start))
+    app.add_handler(CommandHandler(["preview", "cocos", "game"], cmd_cocos_preview))
     app.add_handler(CommandHandler(["agent", "engine"], cmd_agent))
     app.add_handler(CommandHandler(["account", "profile"], cmd_account))
     app.add_handler(CommandHandler(["help"], cmd_help))
@@ -1051,6 +1230,17 @@ def main():
             logger.error(f"Exception while handling an update: {context.error}", exc_info=context.error)
 
     app.add_error_handler(global_error_handler)
+
+    # Đăng ký hàm dọn dẹp khi tắt bot
+    def cleanup():
+        try:
+            loop = asyncio.new_event_loop()
+            loop.run_until_complete(cocos_preview_mgr.stop_preview())
+            loop.close()
+        except Exception:
+            pass
+
+    atexit.register(cleanup)
 
     print("🤖 Bot đã sẵn sàng nhận tin nhắn từ Telegram. Nhấn Ctrl+C để dừng.")
     app.run_polling(drop_pending_updates=True)

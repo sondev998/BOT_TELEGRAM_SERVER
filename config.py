@@ -44,7 +44,19 @@ class Config:
     ).strip()
     DEFAULT_CODEX_EFFORT: str = os.getenv("DEFAULT_CODEX_EFFORT", "medium").strip()
 
-    # Tìm đường dẫn agy.exe
+    # Cấu hình Cocos Creator Engine
+    COCOS_CREATOR_PATH: str = os.getenv("COCOS_CREATOR_PATH", "").strip()
+    COCOS_CREATOR_2X_PATH: str = os.getenv("COCOS_CREATOR_2X_PATH", "").strip()
+    COCOS_CREATOR_3X_PATH: str = os.getenv("COCOS_CREATOR_3X_PATH", "").strip()
+    DEFAULT_PREVIEW_PORT: int = int(os.getenv("DEFAULT_PREVIEW_PORT", "7456"))
+
+    # Cấu hình Cloudflare Tunnel
+    CLOUDFLARED_PATH: str = os.getenv("CLOUDFLARED_PATH", "").strip()
+    CLOUDFLARE_MODE: str = os.getenv("CLOUDFLARE_MODE", "quick").strip().lower()
+    CLOUDFLARE_TUNNEL_NAME: str = os.getenv("CLOUDFLARE_TUNNEL_NAME", "").strip()
+    CLOUDFLARE_HOSTNAME: str = os.getenv("CLOUDFLARE_HOSTNAME", "").strip()
+
+    # Tự động tìm đường dẫn agy.exe
     _agy_env = os.getenv("AGY_PATH", "").strip()
     if _agy_env and os.path.exists(_agy_env):
         AGY_PATH: str = _agy_env
@@ -58,7 +70,7 @@ class Config:
         else:
             AGY_PATH = "agy"
 
-    # Tìm đường dẫn codex.cmd / codex.exe
+    # Tự động tìm đường dẫn codex.cmd / codex.exe
     _codex_env = os.getenv("CODEX_PATH", "").strip()
     if _codex_env and os.path.exists(_codex_env):
         CODEX_PATH: str = _codex_env
@@ -80,6 +92,23 @@ class Config:
             CODEX_PATH = _appdata_codex
         else:
             CODEX_PATH = "codex"
+
+    # Tự động tìm cloudflared.exe nếu chưa có cấu hình
+    if not CLOUDFLARED_PATH or not os.path.exists(CLOUDFLARED_PATH):
+        _cf_candidates = [
+            r"C:\Program Files (x86)\cloudflared\cloudflared.exe",
+            r"C:\Program Files\cloudflared\cloudflared.exe",
+            os.path.expandvars(r"%LOCALAPPDATA%\cloudflared\cloudflared.exe"),
+            os.path.expandvars(r"%APPDATA%\cloudflared\cloudflared.exe"),
+        ]
+        for c in _cf_candidates:
+            if os.path.exists(c):
+                CLOUDFLARED_PATH = c
+                break
+        if not CLOUDFLARED_PATH:
+            _which_cf = shutil.which("cloudflared") or shutil.which("cloudflared.exe")
+            if _which_cf:
+                CLOUDFLARED_PATH = _which_cf
 
     @classmethod
     def reload(cls):
@@ -106,6 +135,13 @@ class Config:
         ).strip()
         cls.DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "high").strip()
         cls.DEFAULT_MODE = os.getenv("DEFAULT_MODE", "accept-edits").strip()
+        cls.COCOS_CREATOR_PATH = os.getenv("COCOS_CREATOR_PATH", "").strip()
+        cls.COCOS_CREATOR_2X_PATH = os.getenv("COCOS_CREATOR_2X_PATH", "").strip()
+        cls.COCOS_CREATOR_3X_PATH = os.getenv("COCOS_CREATOR_3X_PATH", "").strip()
+        cls.CLOUDFLARED_PATH = os.getenv("CLOUDFLARED_PATH", "").strip()
+        cls.CLOUDFLARE_MODE = os.getenv("CLOUDFLARE_MODE", "quick").strip().lower()
+        cls.CLOUDFLARE_TUNNEL_NAME = os.getenv("CLOUDFLARE_TUNNEL_NAME", "").strip()
+        cls.CLOUDFLARE_HOSTNAME = os.getenv("CLOUDFLARE_HOSTNAME", "").strip()
 
     @classmethod
     def is_user_allowed(cls, user_id: int) -> bool:
