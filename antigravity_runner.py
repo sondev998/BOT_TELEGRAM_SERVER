@@ -73,10 +73,20 @@ class AntigravityRunner(BaseAgentRunner):
         on_status_update: Optional[Callable[[str], None]] = None,
     ) -> AsyncGenerator[AgentEvent, None]:
         """Thực thi prompt qua Antigravity CLI và stream các sự kiện trả về."""
+        # Thêm chỉ dẫn an toàn cho phiên làm việc mới
+        effective_prompt = prompt
+        if not session.conversation_id:
+            safety_prefix = (
+                f"[SYSTEM SAFETY CONSTRAINT: You must NEVER execute destructive OS operations "
+                f"such as formatting disks, running diskpart, clearing partitions, deleting Windows system directories, "
+                f"modifying HKLM registry, or shutting down PC. Strictly confine file operations to: {workspace_dir}]\n\n"
+            )
+            effective_prompt = safety_prefix + prompt
+
         cmd = [
             Config.AGY_PATH,
             "-p",
-            prompt,
+            effective_prompt,
             "--output-format",
             "stream-json",
             "--dangerously-skip-permissions",

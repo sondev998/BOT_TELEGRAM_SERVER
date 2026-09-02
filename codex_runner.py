@@ -78,9 +78,15 @@ class CodexRunner(BaseAgentRunner):
             ]
             if session.model and session.model.lower() != "default":
                 cmd.extend(["-m", session.model])
-            if session.effort:
-                cmd.extend(["-c", f'model_reasoning_effort="{session.effort}"'])
-            cmd.append(prompt)
+            effective_prompt = prompt
+            if not session.conversation_id:
+                safety_prefix = (
+                    f"[SYSTEM SAFETY CONSTRAINT: You must NEVER execute destructive OS operations "
+                    f"such as formatting disks, running diskpart, clearing partitions, deleting Windows system directories, "
+                    f"modifying HKLM registry, or shutting down PC. Strictly confine file operations to: {workspace_dir}]\n\n"
+                )
+                effective_prompt = safety_prefix + prompt
+            cmd.append(effective_prompt)
 
         logger.info(
             f"Spawning codex for user {session.user_id} in {workspace_dir}: {' '.join(cmd[:5])}..."

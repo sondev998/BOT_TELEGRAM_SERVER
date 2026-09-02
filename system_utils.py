@@ -9,10 +9,11 @@ import psutil
 from PIL import ImageGrab
 
 from account_manager import account_mgr
+from security_guard import security_guard
 
 
 class SystemUtils:
-    """Công cụ theo dõi hệ thống máy tính và chạy lệnh trực tiếp."""
+    """Công cụ theo dõi hệ thống máy tính và chạy lệnh an toàn."""
 
     START_TIME = time.time()
 
@@ -98,7 +99,15 @@ class SystemUtils:
     async def run_shell_command(
         cls, command: str, cwd: str, timeout: int = 60
     ) -> tuple[int, str]:
-        """Thực thi lệnh PowerShell trực tiếp trên máy."""
+        """
+        Thực thi lệnh PowerShell trực tiếp trên máy sau khi đã qua màng lọc kiểm duyệt an toàn.
+        """
+        # 1. Kiểm tra an toàn trước khi thực thi
+        is_safe, error_msg = security_guard.is_command_safe(command)
+        if not is_safe:
+            return -1, error_msg
+
+        # 2. Thực thi lệnh nếu an toàn
         try:
             process = await asyncio.create_subprocess_exec(
                 "powershell.exe",
