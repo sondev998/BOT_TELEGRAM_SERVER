@@ -12,7 +12,7 @@ class Config:
     BASE_DIR: Path = BASE_DIR
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
-    # Danh sách User ID được phép truy cập
+    # Danh sách User ID được phép truy cập (Whitelist)
     _allowed_raw: str = os.getenv("ALLOWED_USER_IDS", "").strip()
     ALLOWED_USER_IDS: set[int] = set()
     if _allowed_raw:
@@ -20,6 +20,12 @@ class Config:
             uid = uid.strip()
             if uid.isdigit():
                 ALLOWED_USER_IDS.add(int(uid))
+
+    # Cấu hình Xác thực & Bảo mật (PIN Authentication & Auto-Lock)
+    AUTH_PIN_HASH: str = os.getenv("AUTH_PIN_HASH", "").strip()
+    AUTH_MAX_ATTEMPTS: int = int(os.getenv("AUTH_MAX_ATTEMPTS", "5"))
+    AUTH_LOCKOUT_SECONDS: int = int(os.getenv("AUTH_LOCKOUT_SECONDS", "300"))
+    AUTH_AUTO_LOCK_MINUTES: int = int(os.getenv("AUTH_AUTO_LOCK_MINUTES", "30"))
 
     # Workspace mặc định
     DEFAULT_WORKSPACE: str = os.getenv(
@@ -118,10 +124,14 @@ class Config:
         cls._allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
         cls.ALLOWED_USER_IDS = set()
         if cls._allowed_raw:
-            for uid in cls._allowed_raw.replace(";", ",").split(","):
+            for uid in _allowed_raw.replace(";", ",").split(","):
                 uid = uid.strip()
                 if uid.isdigit():
                     cls.ALLOWED_USER_IDS.add(int(uid))
+        cls.AUTH_PIN_HASH = os.getenv("AUTH_PIN_HASH", "").strip()
+        cls.AUTH_MAX_ATTEMPTS = int(os.getenv("AUTH_MAX_ATTEMPTS", "5"))
+        cls.AUTH_LOCKOUT_SECONDS = int(os.getenv("AUTH_LOCKOUT_SECONDS", "300"))
+        cls.AUTH_AUTO_LOCK_MINUTES = int(os.getenv("AUTH_AUTO_LOCK_MINUTES", "30"))
         cls.DEFAULT_WORKSPACE = os.getenv(
             "DEFAULT_WORKSPACE", str(BASE_DIR)
         ).strip()
@@ -145,7 +155,7 @@ class Config:
 
     @classmethod
     def is_user_allowed(cls, user_id: int) -> bool:
-        """Kiểm tra quyền truy cập của người dùng."""
+        """Kiểm tra quyền truy cập của người dùng theo danh sách Whitelist."""
         if not cls.ALLOWED_USER_IDS:
             return False
         return user_id in cls.ALLOWED_USER_IDS

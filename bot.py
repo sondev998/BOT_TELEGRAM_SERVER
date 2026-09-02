@@ -26,6 +26,7 @@ from telegram.ext import (
 from account_manager import account_mgr
 from agent_base import AgentType
 from agent_manager import agent_mgr
+from auth_manager import AuthManager, Permission, SecurityEventType, auth_mgr
 from cocos_detector import cocos_detector
 from cocos_preview_manager import CocosPreviewState, cocos_preview_mgr
 from config import Config
@@ -47,33 +48,50 @@ logger = logging.getLogger("DualAgentTelegramBot")
 
 
 # ==========================================
-# HELPER FUNCTIONS
+# AUTHENTICATION & SECURITY HELPERS
 # ==========================================
 
-def is_authorized(user_id: int) -> bool:
-    """Kiểm tra quyền của người dùng."""
-    return Config.is_user_allowed(user_id)
-
-
 async def send_unauthorized_msg(update: Update):
-    """Thông báo khi người dùng chưa được cấp quyền."""
-    user = update.effective_user
-    user_id = user.id if user else 0
-    env_file_path = Config.BASE_DIR / ".env"
+    """Thông báo khi người dùng chưa được cấp quyền trong Whitelist (Anti-enumeration: không tiết lộ cấu hình)."""
     text = (
-        f"⛔ **BẠN CHƯA ĐƯỢC PHÂN QUYỀN TRUY CẬP**\n\n"
-        f"👤 **User ID của bạn:** `{user_id}`\n\n"
-        f"👉 **Cách cấp quyền:**\n"
-        f"1. Mở file `.env` tại thư mục bot trên máy tính:\n"
-        f"   `{env_file_path}`\n"
-        f"2. Thêm ID của bạn vào dòng:\n"
-        f"   `ALLOWED_USER_IDS={user_id}`\n"
-        f"3. Lưu file và khởi động lại Bot."
+        "⛔ **BẠN CHƯA ĐƯỢC PHÂN QUYỀN TRUY CẬP**\n\n"
+        "Tài khoản của bạn không nằm trong danh sách được phép điều khiển máy chủ này.\n"
+        "Vui lòng liên hệ quản trị viên để được cấp quyền."
     )
     if update.message:
         await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
     elif update.callback_query:
         await update.callback_query.answer("⛔ Bạn chưa được phân quyền!", show_alert=True)
+
+
+async def send_locked_msg(update: Update):
+    """Thông báo khi Controller đang bị khóa và yêu cầu nhập mã PIN."""
+    user = update.effective_user
+    if user:
+        auth_mgr.set_awaiting_pin(user.id, True)
+
+    msg, reply_markup = build_locked_view()
+    if update.message:
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+    elif update.callback_query:
+        try:
+            await update.callback_query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        except Exception:
+            await update.callback_query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+
+
+def build_locked_view() -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện khi Controller đang ở trạng thái LOCKED."""
+    msg = (
+        "🔒 **LOCAL CONTROLLER LOCKED**\n\n"
+        "🔴 **Trạng thái:** `Đang bị khóa (Locked)`\n\n"
+        "👉 *Vui lòng gõ mã PIN bảo mật và gửi trực tiếp vào tin nhắn chat để mở khóa.*"
+    )
+    keyboard = [
+        [InlineKeyboardButton("🔐 Mở khóa (Nhập PIN)", callback_data="auth_unlock")],
+        [InlineKeyboardButton("❓ Trợ giúp bảo mật", callback_data="auth_help")],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
 
 
 async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: int = None):
@@ -141,7 +159,7 @@ async def send_smart_message(bot, chat_id: int, text: str, reply_to_message_id: 
 
 
 def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
-    """Tạo bàn phím menu chính."""
+    """Tạo bàn phím menu chính khi đã xác thực."""
     keyboard = [
         [
             InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
@@ -161,13 +179,14 @@ def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
+            InlineKeyboardButton("🔒 Khóa Controller", callback_data="auth_lock"),
         ],
     ]
     return InlineKeyboardMarkup(keyboard)
 
 
 def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str:
-    """Tạo nội dung text cho Dashboard chính."""
+    """Tạo nội dung text cho Dashboard chính khi đã AUTHENTICATED."""
     ws = workspace_mgr.get_current_workspace(user_id)
     active_type = agent_mgr.get_active_agent_type(user_id)
     runner = agent_mgr.get_active_runner(user_id)
@@ -189,8 +208,8 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
     cocos_badge = "🟢 Đang chạy" if cocos_st["status"] == CocosPreviewState.RUNNING else "⚪ Tắt"
 
     msg = (
-        f"🤖 **DUAL AGENT & COCOS PREVIEW CONTROLLER**\n\n"
-        f"Chào mừng **{user_first_name}**! Bạn có thể lập trình, fix bug và preview game Cocos từ xa.\n\n"
+        f"🟢 **LOCAL CONTROLLER - AUTHENTICATED**\n\n"
+        f"Chào mừng **{user_first_name}**! Bạn có quyền điều khiển toàn diện hệ thống PC.\n\n"
         f"🛠️ **Agent Đang Dùng:** {agent_badge}\n"
         f"{acc_text}\n"
         f"🎮 **Cocos Preview:** `{cocos_badge}`\n"
@@ -198,7 +217,7 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
         f"🧠 **Model:** `{session.model or 'Mặc định'}`\n"
         f"⚡ **Effort:** `{session.effort or 'Mặc định'}`\n"
         f"💬 **Session ID:** `{session_id_display}`\n\n"
-        f"👇 **Chọn chức năng nhanh bên dưới:**"
+        f"👇 **Chọn chức năng bên dưới:**"
     )
     return msg
 
@@ -287,8 +306,12 @@ def build_cocos_preview_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /start - Menu điều khiển chính."""
     user = update.effective_user
-    if not is_authorized(user.id):
+    if not user or not auth_mgr.is_whitelisted(user.id):
         await send_unauthorized_msg(update)
+        return
+
+    if not auth_mgr.is_authenticated(user.id):
+        await send_locked_msg(update)
         return
 
     msg = get_main_dashboard_text(user.id, user.first_name)
@@ -299,11 +322,65 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
+async def cmd_lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /lock hoặc /logout - Khóa Controller an toàn."""
+    user = update.effective_user
+    if not user or not auth_mgr.is_whitelisted(user.id):
+        await send_unauthorized_msg(update)
+        return
+
+    auth_mgr.lock(user.id)
+    msg = (
+        "🔒 **LOCAL CONTROLLER ĐÃ ĐƯỢC KHÓA**\n\n"
+        "Tất cả quyền điều khiển và truy cập file đã được đóng an toàn.\n"
+        "Nhập mã PIN để mở khóa lại bất cứ lúc nào."
+    )
+    keyboard = [
+        [InlineKeyboardButton("🔐 Mở khóa (Nhập PIN)", callback_data="auth_unlock")],
+    ]
+    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /unlock hoặc /auth [pin] - Mở khóa Controller."""
+    user = update.effective_user
+    if not user or not auth_mgr.is_whitelisted(user.id):
+        await send_unauthorized_msg(update)
+        return
+
+    # Nếu người dùng truyền PIN trực tiếp (ví dụ: /unlock 123456)
+    if context.args:
+        pin = context.args[0]
+        # Xóa tin nhắn chứa PIN nếu có quyền để bảo mật chat history
+        try:
+            await update.message.delete()
+        except Exception:
+            pass
+
+        ok, res_msg = auth_mgr.verify_pin(user.id, pin)
+        if ok:
+            dashboard = get_main_dashboard_text(user.id, user.first_name)
+            await update.message.reply_text(
+                f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_main_menu_keyboard(user.id),
+            )
+        else:
+            await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+    else:
+        auth_mgr.set_awaiting_pin(user.id, True)
+        await update.message.reply_text(
+            "🔐 **Vui lòng nhập mã PIN bảo mật:**\n\nGõ mã PIN của bạn và gửi vào đây.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+
 async def cmd_cocos_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /preview hoặc /cocos - Bảng điều khiển Cocos Creator Preview."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     msg, reply_markup = build_cocos_preview_view(user.id)
@@ -315,8 +392,9 @@ async def cmd_cocos_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /agent - Chọn Agent Engine."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     active_type = agent_mgr.get_active_agent_type(user.id)
@@ -354,8 +432,9 @@ async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /account hoặc /profile - Xem thông tin tài khoản."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     summary = account_mgr.get_all_accounts_summary()
@@ -374,12 +453,25 @@ async def cmd_account(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /help - Hướng dẫn chi tiết."""
     user = update.effective_user
-    if not is_authorized(user.id):
+    if not user or not auth_mgr.is_whitelisted(user.id):
         await send_unauthorized_msg(update)
         return
 
+    if not auth_mgr.is_authenticated(user.id):
+        help_locked = (
+            "📖 **HƯỚNG DẪN MỞ KHÓA BOT**\n\n"
+            "Controller hiện đang ở trạng thái **LOCKED** để bảo vệ an toàn máy tính.\n"
+            "• Gõ mã PIN và gửi trực tiếp vào tin nhắn chat để mở khóa.\n"
+            "• Hoặc gõ lệnh `/unlock <mã_pin>`."
+        )
+        await update.message.reply_text(help_locked, parse_mode=ParseMode.MARKDOWN)
+        return
+
     help_text = (
-        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN DUAL AGENT & COCOS BOT**\n\n"
+        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN LOCAL CONTROLLER**\n\n"
+        f"🔐 **Bảo mật & Khóa:**\n"
+        f"• `/lock` hoặc `/logout` - Khóa ngay bảng điều khiển\n"
+        f"• `/unlock <mã_pin>` - Mở khóa Controller\n\n"
         f"🎮 **Cocos Creator Preview:**\n"
         f"• Nhấn **🎮 Cocos Preview** hoặc gõ `/preview` để bật server preview game và mở tunnel Cloudflare HTTPS.\n"
         f"• Nhấn **🎮 OPEN PREVIEW** để chơi game trực tiếp trong ứng dụng Telegram!\n\n"
@@ -387,7 +479,6 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu cho bot để AI tự động code, sửa bug.\n\n"
         f"🎛️ **Các lệnh điều khiển:**\n"
         f"• `/start` - Mở bảng điều khiển chính\n"
-        f"• `/preview` hoặc `/cocos` - Mở bảng điều khiển Cocos Preview\n"
         f"• `/agent` - Đổi giữa **🤖 Antigravity** và **⚡ OpenAI Codex**\n"
         f"• `/account` - Xem thông tin Email & Gói tài khoản AI\n"
         f"• `/model` - Đổi Model AI và Reasoning Effort\n"
@@ -407,8 +498,9 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /new hoặc /reset - Xóa phiên làm việc hiện tại."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     active_type = agent_mgr.get_active_agent_type(user.id)
@@ -424,8 +516,9 @@ async def cmd_reset(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /stop - Hủy tác vụ đang chạy."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     if agent_mgr.is_running(user.id):
@@ -441,8 +534,9 @@ async def cmd_stop(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /status - Xem tài nguyên PC và tài khoản."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     ws = workspace_mgr.get_current_workspace(user.id)
@@ -466,7 +560,10 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
             InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
             InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
         ],
-        [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        [
+            InlineKeyboardButton("🔒 Khóa Controller", callback_data="auth_lock"),
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
     ]
     await update.message.reply_text(
         status_text,
@@ -478,8 +575,9 @@ async def cmd_status(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /screenshot - Chụp màn hình máy tính."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     msg = await update.message.reply_text("📸 Đang chụp màn hình PC...")
@@ -501,8 +599,9 @@ async def cmd_screenshot(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /workspace - Quản lý workspace."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     current_ws = workspace_mgr.get_current_workspace(user.id)
@@ -538,8 +637,9 @@ async def cmd_workspace(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /cd <path> - Đổi thư mục làm việc."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     if not context.args:
@@ -550,8 +650,8 @@ async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     target_path = " ".join(context.args)
-    ok, res = workspace_mgr.set_workspace(user.id, target_path)
-    if ok:
+    ok_cd, res = workspace_mgr.set_workspace(user.id, target_path)
+    if ok_cd:
         await update.message.reply_text(
             f"✅ **Đã chuyển Workspace sang:**\n`{res}`",
             parse_mode=ParseMode.MARKDOWN,
@@ -563,21 +663,23 @@ async def cmd_cd(update: Update, context: ContextTypes.DEFAULT_TYPE):
 async def cmd_ls(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /ls [subpath] - Liệt kê file."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     subpath = " ".join(context.args) if context.args else ""
     current_ws = workspace_mgr.get_current_workspace(user.id)
-    ok, res = workspace_mgr.list_files(current_ws, subpath)
+    ok_ls, res = workspace_mgr.list_files(current_ws, subpath)
     await update.message.reply_text(res, parse_mode=ParseMode.MARKDOWN)
 
 
 async def cmd_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /view <file> - Đọc nội dung file."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     if not context.args:
@@ -586,15 +688,16 @@ async def cmd_view(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     filepath = " ".join(context.args)
     current_ws = workspace_mgr.get_current_workspace(user.id)
-    ok, res = workspace_mgr.read_file(current_ws, filepath)
+    ok_v, res = workspace_mgr.read_file(current_ws, filepath)
     await send_smart_message(context.bot, update.effective_chat.id, res)
 
 
 async def cmd_powershell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /cmd <command> - Chạy PowerShell trực tiếp."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     if not context.args:
@@ -685,8 +788,9 @@ def build_model_settings_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
 async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lệnh /model - Cài đặt Model và tham số."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     msg, reply_markup = build_model_settings_view(user.id)
@@ -700,16 +804,62 @@ async def cmd_model(update: Update, context: ContextTypes.DEFAULT_TYPE):
 # ==========================================
 
 async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Xử lý các nút bấm inline keyboard."""
+    """Xử lý các nút bấm inline keyboard với Authorization Middleware bắt buộc."""
     query = update.callback_query
     await query.answer()
 
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    if not user or not auth_mgr.is_whitelisted(user.id):
+        auth_mgr.log_security_event(SecurityEventType.UNAUTHORIZED_USER, user.id if user else 0, f"Callback rejected: {query.data}")
+        await query.answer("⛔ Bạn chưa được phân quyền!", show_alert=True)
         return
 
     data = query.data
+
+    # --- A. CÁC CALLBACK BẢO MẬT & XÁC THỰC (Không yêu cầu đã authenticated trước) ---
+    if data == "auth_unlock":
+        auth_mgr.set_awaiting_pin(user.id, True)
+        await query.edit_message_text(
+            "🔐 **VUI LÒNG NHẬP MÃ PIN BẢO MẬT:**\n\n"
+            "👉 Hãy gõ mã PIN của bạn và gửi trực tiếp vào đây để mở khóa Controller.",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+        return
+
+    elif data == "auth_help":
+        help_text = (
+            "🛡️ **THÔNG TIN BẢO MẬT LOCAL CONTROLLER**\n\n"
+            "• Controller này điều khiển trực tiếp phần cứng và tệp trên PC của bạn.\n"
+            "• Trạng thái xác thực chỉ lưu trong bộ nhớ tạm thời (RAM).\n"
+            "• Khi máy tính hoặc bot restart, Controller sẽ tự động **LOCKED** lại.\n"
+            "• Nhập đúng mã PIN để mở khóa và điều khiển."
+        )
+        keyboard = [[InlineKeyboardButton("🔐 Mở khóa", callback_data="auth_unlock")]]
+        await query.edit_message_text(help_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+        return
+
+    elif data == "auth_lock":
+        auth_mgr.lock(user.id)
+        msg, reply_markup = build_locked_view()
+        await query.edit_message_text(
+            f"🔒 **ĐÃ KHÓA LOCAL CONTROLLER THÀNH CÔNG!**\n\n{msg}",
+            parse_mode=ParseMode.MARKDOWN,
+            reply_markup=reply_markup,
+        )
+        return
+
+    # --- B. KIỂM TRA AUTHENTICATED CHO TẤT CẢ CÁC CHỨC NĂNG CÒN LẠI ---
+    if not auth_mgr.is_authenticated(user.id):
+        auth_mgr.log_security_event(SecurityEventType.UNAUTHORIZED_COMMAND, user.id, f"Blocked locked callback: {data}")
+        await query.answer("🔒 Controller đang bị khóa. Vui lòng mở khóa trước!", show_alert=True)
+        msg, reply_markup = build_locked_view()
+        try:
+            await query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        except Exception:
+            pass
+        return
+
+    # --- C. DISPATCH CÁC ACTION ĐÃ ĐƯỢC XÁC THỰC ---
 
     # --- 1. MENU CHÍNH ---
     if data == "menu_main":
@@ -740,7 +890,6 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             )
             return
 
-        # Hiển thị tiến trình khởi động
         await query.edit_message_text(
             f"🎮 **ĐANG KHỞI ĐỘNG COCOS PREVIEW...**\n\n"
             f"📂 Dự án: `{info.project_name}`\n"
@@ -915,7 +1064,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 
     elif data == "ws_list_files":
         current_ws = workspace_mgr.get_current_workspace(user.id)
-        ok, res = workspace_mgr.list_files(current_ws)
+        ok_ls, res = workspace_mgr.list_files(current_ws)
         await query.edit_message_text(
             res,
             parse_mode=ParseMode.MARKDOWN,
@@ -943,7 +1092,10 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
                 InlineKeyboardButton("👤 Tài khoản AI", callback_data="menu_account"),
                 InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
             ],
-            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+            [
+                InlineKeyboardButton("🔒 Khóa Controller", callback_data="auth_lock"),
+                InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+            ],
         ]
         try:
             await query.edit_message_text(
@@ -981,8 +1133,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
             f"• Nhấn **🎮 Cocos Preview** để mở game trên điện thoại.\n"
             f"• Nhắn trực tiếp yêu cầu lập trình cho Bot.\n"
             f"• Dùng `/agent` để chuyển đổi Antigravity / Codex.\n"
-            f"• Dùng `/account` để xem thông tin tài khoản.\n"
-            f"• Dùng `/stop` để hủy lệnh đang chạy.\n"
+            f"• Dùng `/lock` để khóa Controller khi không dùng.\n"
             f"• Dùng `/workspace` để đổi thư mục code.\n"
             f"• Dùng `/screenshot` để xem màn hình PC."
         )
@@ -1000,8 +1151,9 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
     """Lưu tệp hoặc ảnh người dùng gửi vào thư mục làm việc hiện tại."""
     user = update.effective_user
-    if not is_authorized(user.id):
-        await send_unauthorized_msg(update)
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
         return
 
     doc = update.message.document
@@ -1038,19 +1190,43 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
 
 
 # ==========================================
-# MAIN PROMPT MESSAGE HANDLER
+# MAIN PROMPT & PIN MESSAGE HANDLER
 # ==========================================
 
 async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Nhận tin nhắn văn bản và chuyển tới Agent Engine đang kích hoạt."""
+    """Nhận tin nhắn văn bản, xác thực PIN nếu đang LOCKED, hoặc chuyển tới AI Agent nếu đã AUTHENTICATED."""
     user = update.effective_user
-    if not is_authorized(user.id):
+    if not user or not auth_mgr.is_whitelisted(user.id):
         await send_unauthorized_msg(update)
         return
 
-    prompt_text = update.message.text.strip()
-    if not prompt_text:
+    text_input = update.message.text.strip()
+    if not text_input:
         return
+
+    # --- 1. XỬ LÝ KHI CHƯA AUTHENTICATED (NHẬP PIN MỞ KHÓA) ---
+    if not auth_mgr.is_authenticated(user.id):
+        # Tự động thử PIN
+        ok, res_msg = auth_mgr.verify_pin(user.id, text_input)
+        if ok:
+            # Xóa tin nhắn chứa PIN nếu có quyền để bảo mật chat
+            try:
+                await update.message.delete()
+            except Exception:
+                pass
+
+            dashboard = get_main_dashboard_text(user.id, user.first_name)
+            await update.message.reply_text(
+                f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
+                parse_mode=ParseMode.MARKDOWN,
+                reply_markup=build_main_menu_keyboard(user.id),
+            )
+        else:
+            await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+        return
+
+    # --- 2. XỬ LÝ PROMPT LẬP TRÌNH KHI ĐÃ AUTHENTICATED ---
+    prompt_text = text_input
 
     # Kiểm tra xem có tác vụ nào đang chạy cho user này không
     if agent_mgr.is_running(user.id):
@@ -1180,19 +1356,22 @@ def main():
         sys.exit(1)
 
     print("=" * 60)
-    print("🚀 KHỞI ĐỘNG DUAL AGENT & COCOS PREVIEW TELEGRAM BOT")
+    print("🚀 KHỞI ĐỘNG LOCAL CONTROLLER (AUTHENTICATION & SECURITY ENABLED)")
     print(f"📂 Workspace mặc định: {Config.DEFAULT_WORKSPACE}")
     print(f"🤖 Agent mặc định: {Config.DEFAULT_AGENT.upper()}")
     print(f"🛠️ agy path: {Config.AGY_PATH}")
     print(f"⚡ codex path: {Config.CODEX_PATH}")
     print(f"🌐 cloudflared path: {Config.CLOUDFLARED_PATH or 'Chưa tìm thấy'}")
-    print(f"👥 Allowed Users: {Config.ALLOWED_USER_IDS or 'Chưa có (sẽ thông báo khi có người nhắn)'}")
+    print(f"👥 Allowed Users: {Config.ALLOWED_USER_IDS or 'Chưa có (sẽ chặn tất cả truy cập)'}")
+    print(f"🔐 Security: PIN Hash scrypt verified | Rate Limit: {Config.AUTH_MAX_ATTEMPTS} attempts / {Config.AUTH_LOCKOUT_SECONDS}s lockout")
     print("=" * 60)
 
     app = Application.builder().token(token).build()
 
     # Đăng ký Command Handlers
     app.add_handler(CommandHandler(["start"], cmd_start))
+    app.add_handler(CommandHandler(["lock", "logout"], cmd_lock))
+    app.add_handler(CommandHandler(["unlock", "auth"], cmd_unlock))
     app.add_handler(CommandHandler(["preview", "cocos", "game"], cmd_cocos_preview))
     app.add_handler(CommandHandler(["agent", "engine"], cmd_agent))
     app.add_handler(CommandHandler(["account", "profile"], cmd_account))
@@ -1214,7 +1393,7 @@ def main():
     # Đăng ký File Upload Handler
     app.add_handler(MessageHandler(filters.Document.ALL | filters.PHOTO, handle_document_upload))
 
-    # Đăng ký Message Handler cho prompt
+    # Đăng ký Message Handler cho prompt / PIN
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_prompt_message))
 
     async def global_error_handler(update: object, context: ContextTypes.DEFAULT_TYPE) -> None:
@@ -1242,7 +1421,7 @@ def main():
 
     atexit.register(cleanup)
 
-    print("🤖 Bot đã sẵn sàng nhận tin nhắn từ Telegram. Nhấn Ctrl+C để dừng.")
+    print("🤖 Controller đã sẵn sàng và đang ở trạng thái LOCKED. Nhấn Ctrl+C để dừng.")
     app.run_polling(drop_pending_updates=True)
 
 
