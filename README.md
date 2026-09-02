@@ -85,10 +85,21 @@ flowchart TD
 ### Bước 1: Cấu hình file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env)
 Mở file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env) trong thư mục `E:\TELEGRAM_BOT\CocosDevBot\` và cập nhật:
 ```env
-TELEGRAM_BOT_TOKEN=Dán_Token_Telegram_Vào_Đây
+TELEGRAM_BOT_TOKEN=Token_Telegram_Của_Bạn
 ALLOWED_USER_IDS=ID_Telegram_Của_Bạn
 DEFAULT_AGENT=antigravity # hoặc codex
 AUTH_AUTO_LOCK_MINUTES=30
+
+
+TẠO BOT: 
+Mở Telegram và tìm: @BotFather
+BotFather là bot chính thức dùng để tạo và quản lý Telegram Bot: /newbot
+BotFather sẽ hỏi: Alright, a new bot. How are we going to call it?
+Nhập tên hiển thị, Ví dụ: Antigravity Controller
+Sau đó BotFather yêu cầu username, Ví dụ: antigravity_controller_bot
+Sau khi tạo thành công, BotFather trả về một Token_Telegram_Của_Bạn dạng: 1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
+Nhắn 1 tin nhắn bất kỳ để bot trả lời lại với thông tin chứa ID_Telegram_Của_Bạn, có dạng: 1234567890
+
 ```
 
 > 💡 **Cách tạo mã PIN bảo mật mới:**
