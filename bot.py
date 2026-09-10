@@ -13,7 +13,7 @@ from telegram import (
     WebAppInfo,
 )
 from telegram.constants import ChatAction, ParseMode
-from telegram.error import BadRequest, Conflict, TelegramError
+from telegram.error import BadRequest, Conflict, NetworkError, TelegramError, TimedOut
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -22,13 +22,20 @@ from telegram.ext import (
     MessageHandler,
     filters,
 )
+from telegram.request import HTTPXRequest
 
 from account_manager import account_mgr
 from agent_base import AgentType
 from agent_manager import agent_mgr
 from auth_manager import AuthManager, Permission, SecurityEventType, auth_mgr
+from cocos_asset_importer import cocos_asset_importer
+from cocos_builder import cocos_builder
 from cocos_detector import cocos_detector
+from cocos_log_fixer import cocos_log_fixer
+from cocos_perf_analyzer import cocos_perf_analyzer
 from cocos_preview_manager import CocosPreviewState, cocos_preview_mgr
+from cocos_scene_parser import cocos_scene_parser
+from cocos_script_generator import cocos_script_generator
 from config import Config
 from system_utils import SystemUtils
 from workspace_manager import workspace_mgr
@@ -52,16 +59,22 @@ logger = logging.getLogger("DualAgentTelegramBot")
 # ==========================================
 
 async def send_unauthorized_msg(update: Update):
-    """Thông báo khi người dùng chưa được cấp quyền trong Whitelist (Anti-enumeration: không tiết lộ cấu hình)."""
+    """Thông báo khi người dùng chưa được cấp quyền trong Whitelist."""
+    user = update.effective_user
+    uid_str = f"`{user.id}`" if user else "Không xác định"
     text = (
         "⛔ **BẠN CHƯA ĐƯỢC PHÂN QUYỀN TRUY CẬP**\n\n"
-        "Tài khoản của bạn không nằm trong danh sách được phép điều khiển máy chủ này.\n"
-        "Vui lòng liên hệ quản trị viên để được cấp quyền."
+        f"🆔 **User ID của bạn:** {uid_str}\n\n"
+        "Tài khoản của bạn chưa có trong danh sách được phép điều khiển máy chủ này.\n"
+        "👉 Vui lòng thêm User ID trên vào `ALLOWED_USER_IDS` trong file `.env` để cấp quyền."
     )
     if update.message:
-        await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        try:
+            await update.message.reply_text(text, parse_mode=ParseMode.MARKDOWN)
+        except Exception:
+            await update.message.reply_text(text)
     elif update.callback_query:
-        await update.callback_query.answer("⛔ Bạn chưa được phân quyền!", show_alert=True)
+        await update.callback_query.answer(f"⛔ Chưa được phân quyền (ID: {user.id if user else '?'})", show_alert=True)
 
 
 async def send_locked_msg(update: Update):
@@ -72,12 +85,18 @@ async def send_locked_msg(update: Update):
 
     msg, reply_markup = build_locked_view()
     if update.message:
-        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        try:
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        except Exception:
+            await update.message.reply_text(msg, reply_markup=reply_markup)
     elif update.callback_query:
         try:
             await update.callback_query.edit_message_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
         except Exception:
-            await update.callback_query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            try:
+                await update.callback_query.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+            except Exception:
+                await update.callback_query.message.reply_text(msg, reply_markup=reply_markup)
 
 
 def build_locked_view() -> tuple[str, InlineKeyboardMarkup]:
@@ -162,12 +181,12 @@ def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
     """Tạo bàn phím menu chính khi đã xác thực."""
     keyboard = [
         [
-            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
-            InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
+            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
+            InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit"),
         ],
         [
-            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
-            InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
+            InlineKeyboardButton("📁 Chọn Workspace", callback_data="menu_workspace"),
+            InlineKeyboardButton("⚙️ Cấu hình Model", callback_data="menu_settings"),
         ],
         [
             InlineKeyboardButton("🔀 Đổi Agent", callback_data="menu_agent"),
@@ -175,10 +194,13 @@ def build_main_menu_keyboard(user_id: int) -> InlineKeyboardMarkup:
         ],
         [
             InlineKeyboardButton("📸 Chụp màn hình", callback_data="menu_screenshot"),
-            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
+            InlineKeyboardButton("📊 Trạng thái PC", callback_data="menu_status"),
         ],
         [
+            InlineKeyboardButton("🔄 Phiên chat mới", callback_data="menu_reset"),
             InlineKeyboardButton("❓ Hướng dẫn", callback_data="menu_help"),
+        ],
+        [
             InlineKeyboardButton("🔒 Khóa Controller", callback_data="auth_lock"),
         ],
     ]
@@ -192,7 +214,8 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
     runner = agent_mgr.get_active_runner(user_id)
     session = agent_mgr.get_session(user_id, active_type)
 
-    agent_badge = f"{runner.emoji} **{runner.display_name}**"
+    agent_name_clean = runner.display_name.lstrip("🤖⚡ ")
+    agent_badge = f"{runner.emoji} **{agent_name_clean}**"
     session_id_display = session.conversation_id[:12] + "..." if session.conversation_id else "Chưa có (sẽ tạo mới)"
 
     # Lấy tài khoản tương ứng
@@ -207,9 +230,11 @@ def get_main_dashboard_text(user_id: int, user_first_name: str = "Bạn") -> str
     cocos_st = cocos_preview_mgr.get_status_data()
     cocos_badge = "🟢 Đang chạy" if cocos_st["status"] == CocosPreviewState.RUNNING else "⚪ Tắt"
 
+    safe_first_name = str(user_first_name or "Bạn").replace("*", "").replace("_", " ").replace("`", "")
+
     msg = (
         f"🟢 **LOCAL CONTROLLER - AUTHENTICATED**\n\n"
-        f"Chào mừng **{user_first_name}**! Bạn có quyền điều khiển toàn diện hệ thống PC.\n\n"
+        f"Chào mừng **{safe_first_name}**! Bạn có quyền điều khiển toàn diện hệ thống PC.\n\n"
         f"🛠️ **Agent Đang Dùng:** {agent_badge}\n"
         f"{acc_text}\n"
         f"🎮 **Cocos Preview:** `{cocos_badge}`\n"
@@ -253,6 +278,7 @@ def build_cocos_preview_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
                 InlineKeyboardButton("⏹ STOP", callback_data="cocos_stop"),
             ],
             [
+                InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit"),
                 InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
             ],
         ]
@@ -289,13 +315,134 @@ def build_cocos_preview_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
             InlineKeyboardButton("🚀 START PREVIEW", callback_data="cocos_start"),
         ],
         [
+            InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit"),
             InlineKeyboardButton("📁 Đổi Workspace", callback_data="menu_workspace"),
-            InlineKeyboardButton("🔄 Làm mới", callback_data="cocos_status"),
         ],
         [
+            InlineKeyboardButton("🔄 Làm mới", callback_data="cocos_status"),
             InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
         ],
     ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+
+def build_cocos_toolkit_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện điều khiển Cocos Dev Toolkit."""
+    ws = workspace_mgr.get_current_workspace(user_id)
+    info = cocos_detector.detect_project(ws)
+
+    if not info.is_cocos:
+        msg = (
+            f"🛠️ **COCOS CREATOR DEV TOOLKIT**\n\n"
+            f"⚠️ **Thư mục hiện tại không phải là dự án Cocos Creator:**\n"
+            f"📂 `{ws}`\n\n"
+            f"💡 *Vui lòng chọn một thư mục dự án Cocos Creator (2.x / 3.x) trong danh sách Workspace trước khi dùng Toolkit.*"
+        )
+        keyboard = [
+            [InlineKeyboardButton("📁 Chọn Workspace Cocos", callback_data="menu_workspace")],
+            [InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main")],
+        ]
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    msg = (
+        f"🛠️ **COCOS CREATOR DEV TOOLKIT**\n\n"
+        f"📂 **Dự án:** `{info.project_name}`\n"
+        f"🛠️ **Phiên bản:** `Cocos Creator {info.engine_version}` (v{info.major_version}.x)\n"
+        f"📁 **Thư mục:** `{info.project_path}`\n\n"
+        f"👇 **Chọn công cụ hỗ trợ lập trình bên dưới:**"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("📦 Build Game Web (/build)", callback_data="cocos_menu_build"),
+            InlineKeyboardButton("⚡ Thẩm định Code (/audit)", callback_data="cocos_menu_perf"),
+        ],
+        [
+            InlineKeyboardButton("🌳 Cây Node Scene (/scene)", callback_data="cocos_menu_scenes"),
+            InlineKeyboardButton("📝 Tạo Script Mẫu (/newscript)", callback_data="cocos_menu_scripts"),
+        ],
+        [
+            InlineKeyboardButton("🎮 Cocos Preview", callback_data="cocos_preview"),
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+
+def build_cocos_build_select_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện chọn nền tảng đóng gói game."""
+    ws = workspace_mgr.get_current_workspace(user_id)
+    info = cocos_detector.detect_project(ws)
+
+    msg = (
+        f"📦 **ĐÓNG GÓI & BUILD GAME COCOS CREATOR**\n\n"
+        f"📂 **Dự án:** `{info.project_name}` ({info.engine_version})\n"
+        f"⚙️ **Trình thực thi:** `{os.path.basename(info.executable_path) if info.executable_path else 'Chưa tìm thấy'}`\n\n"
+        f"👇 Chọn nền tảng để bắt đầu đóng gói tự động:"
+    )
+    keyboard = [
+        [
+            InlineKeyboardButton("📱 Web Mobile (HTML5)", callback_data="cocos_do_build_web-mobile"),
+            InlineKeyboardButton("💻 Web Desktop", callback_data="cocos_do_build_web-desktop"),
+        ],
+        [
+            InlineKeyboardButton("🛠️ Toolkit", callback_data="cocos_toolkit"),
+            InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+        ],
+    ]
+    return msg, InlineKeyboardMarkup(keyboard)
+
+
+def build_cocos_scenes_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện danh sách các Scene/Prefab trong dự án."""
+    ws = workspace_mgr.get_current_workspace(user_id)
+    files = cocos_scene_parser.get_scene_and_prefab_files(ws)
+
+    if not files:
+        msg = (
+            f"🌳 **HIERARCHY INSPECTOR**\n\n"
+            f"📂 Thư mục `{ws}` không tìm thấy tệp `.scene`, `.fire` hoặc `.prefab` nào."
+        )
+        keyboard = [[InlineKeyboardButton("⬅️ Quay lại Toolkit", callback_data="cocos_toolkit")]]
+        return msg, InlineKeyboardMarkup(keyboard)
+
+    msg = (
+        f"🌳 **DANH SÁCH SCENE & PREFAB TRONG DỰ ÁN**\n\n"
+        f"📊 Tìm thấy `{len(files)}` tệp Scene/Prefab.\n"
+        f"👇 Nhấn vào tệp bên dưới để xem sơ đồ cây Node và sinh mã TypeScript:"
+    )
+
+    keyboard = []
+    # Hiển thị tối đa 8 tệp đầu tiên
+    for idx, f in enumerate(files[:8]):
+        fname = os.path.basename(f)
+        icon = "🎬 " if f.endswith((".scene", ".fire")) else "📦 "
+        keyboard.append([InlineKeyboardButton(f"{icon}{fname}", callback_data=f"cocos_scene_show_{idx}")])
+
+    keyboard.append([
+        InlineKeyboardButton("🛠️ Toolkit", callback_data="cocos_toolkit"),
+        InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+    ])
+    return msg, InlineKeyboardMarkup(keyboard)
+
+
+def build_cocos_scripts_select_view(user_id: int) -> tuple[str, InlineKeyboardMarkup]:
+    """Tạo giao diện chọn mẫu mã nguồn Script TypeScript."""
+    templates = cocos_script_generator.TEMPLATES
+
+    msg = (
+        f"📝 **TẠO MÃ NGUỒN TYPESCRIPT MẪU CHUẨN COCOS**\n\n"
+        f"✨ *Mỗi script tạo ra sẽ tự động kèm tệp `.meta` có UUID chuẩn để Engine không bị mất liên kết.*\n\n"
+        f"👇 **Chọn mẫu Component cần tạo:**"
+    )
+
+    keyboard = []
+    for key, data in templates.items():
+        keyboard.append([InlineKeyboardButton(data["name"], callback_data=f"cocos_gen_script_{key}")])
+
+    keyboard.append([
+        InlineKeyboardButton("🛠️ Toolkit", callback_data="cocos_toolkit"),
+        InlineKeyboardButton("⬅️ Trang chủ", callback_data="menu_main"),
+    ])
     return msg, InlineKeyboardMarkup(keyboard)
 
 
@@ -317,9 +464,14 @@ async def cmd_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     msg = get_main_dashboard_text(user.id, user.first_name)
     reply_markup = build_main_menu_keyboard(user.id)
 
-    await update.message.reply_text(
-        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
-    )
+    try:
+        await update.message.reply_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+    except Exception:
+        await update.message.reply_text(
+            msg, reply_markup=reply_markup
+        )
 
 
 async def cmd_lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -338,7 +490,10 @@ async def cmd_lock(update: Update, context: ContextTypes.DEFAULT_TYPE):
     keyboard = [
         [InlineKeyboardButton("🔐 Mở khóa (Nhập PIN)", callback_data="auth_unlock")],
     ]
-    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+    try:
+        await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await update.message.reply_text(msg, reply_markup=InlineKeyboardMarkup(keyboard))
 
 
 async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -360,19 +515,33 @@ async def cmd_unlock(update: Update, context: ContextTypes.DEFAULT_TYPE):
         ok, res_msg = auth_mgr.verify_pin(user.id, pin)
         if ok:
             dashboard = get_main_dashboard_text(user.id, user.first_name)
-            await update.message.reply_text(
-                f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_main_menu_keyboard(user.id),
-            )
+            try:
+                await update.message.reply_text(
+                    f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_main_menu_keyboard(user.id),
+                )
+            except Exception:
+                await update.message.reply_text(
+                    f"🟢 XÁC THỰC THÀNH CÔNG!\n\n{dashboard}",
+                    reply_markup=build_main_menu_keyboard(user.id),
+                )
         else:
-            await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(res_msg)
     else:
         auth_mgr.set_awaiting_pin(user.id, True)
-        await update.message.reply_text(
-            "🔐 **Vui lòng nhập mã PIN bảo mật:**\n\nGõ mã PIN của bạn và gửi vào đây.",
-            parse_mode=ParseMode.MARKDOWN,
-        )
+        try:
+            await update.message.reply_text(
+                "🔐 **Vui lòng nhập mã PIN bảo mật:**\n\nGõ mã PIN của bạn và gửi vào đây.",
+                parse_mode=ParseMode.MARKDOWN,
+            )
+        except Exception:
+            await update.message.reply_text(
+                "🔐 Vui lòng nhập mã PIN bảo mật:\n\nGõ mã PIN của bạn và gửi vào đây."
+            )
 
 
 async def cmd_cocos_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -384,9 +553,241 @@ async def cmd_cocos_preview(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     msg, reply_markup = build_cocos_preview_view(user.id)
-    await update.message.reply_text(
-        msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+    try:
+        await update.message.reply_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+    except Exception:
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+
+
+async def cmd_toolkit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /toolkit hoặc /tools - Bộ công cụ lập trình Cocos Creator."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    msg, reply_markup = build_cocos_toolkit_view(user.id)
+    try:
+        await update.message.reply_text(
+            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+        )
+    except Exception:
+        await update.message.reply_text(msg, reply_markup=reply_markup)
+
+
+async def cmd_build(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /build [platform] - Tự động đóng gói game Cocos Creator."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    ws = workspace_mgr.get_current_workspace(user.id)
+    info = cocos_detector.detect_project(ws)
+    if not info.is_cocos:
+        await update.message.reply_text(f"⚠️ Thư mục hiện tại không phải là dự án Cocos Creator:\n`{ws}`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    platform = context.args[0] if context.args else "web-mobile"
+    status_msg = await update.message.reply_text(
+        f"🚀 **BẮT ĐẦU BUILD GAME COCOS CREATOR**\n\n"
+        f"📂 Dự án: `{info.project_name}` ({info.engine_version})\n"
+        f"📱 Nền tảng: `{platform}`\n"
+        f"⏳ *Đang biên dịch... Quá trình có thể mất từ 30 giây đến 2 phút.*",
+        parse_mode=ParseMode.MARKDOWN,
     )
+
+    last_text = ""
+    async def status_cb(text: str):
+        nonlocal last_text
+        if text != last_text:
+            last_text = text
+            try:
+                await status_msg.edit_text(f"📦 {text}")
+            except Exception:
+                pass
+
+    success, summary, zip_path, log_content = await cocos_builder.build_project(
+        workspace_path=ws,
+        platform=platform,
+        debug=False,
+        status_callback=status_cb,
+    )
+
+    keyboard = [[InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit")]]
+    if not success and log_content:
+        issue_id = cocos_log_fixer.register_issue(
+            workspace_path=ws,
+            title=f"Build failed ({platform})",
+            error_log=log_content,
+        )
+        keyboard.insert(0, [InlineKeyboardButton("🛠️ Auto-Fix Lỗi này với AI", callback_data=f"cocos_autofix_{issue_id}")])
+
+    try:
+        await status_msg.edit_text(summary, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await status_msg.edit_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    # Gửi file zip nếu dung lượng nhỏ hơn 45MB
+    if success and zip_path and os.path.exists(zip_path):
+        file_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+        if file_size_mb <= 45.0:
+            try:
+                with open(zip_path, "rb") as zf:
+                    await update.message.reply_document(
+                        document=zf,
+                        filename=os.path.basename(zip_path),
+                        caption=f"📦 **Gói Build {platform.upper()}** (`{file_size_mb:.2f} MB`)",
+                        parse_mode=ParseMode.MARKDOWN,
+                    )
+            except Exception as e:
+                logger.warning(f"Không thể gửi file zip qua Telegram: {e}")
+
+
+async def cmd_audit(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /audit hoặc /perf - Thẩm định chất lượng & tối ưu hiệu năng mã nguồn Cocos."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    ws = workspace_mgr.get_current_workspace(user.id)
+    status_msg = await update.message.reply_text("⚡ **Đang thẩm định hiệu năng mã nguồn toàn dự án...**", parse_mode=ParseMode.MARKDOWN)
+
+    report = cocos_perf_analyzer.audit_workspace(ws)
+    report_text = cocos_perf_analyzer.format_report_text(report)
+
+    keyboard = [
+        [InlineKeyboardButton("🛠️ Tự động tối ưu bằng AI", callback_data="cocos_perf_autofix")],
+        [InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit")],
+    ]
+    try:
+        await status_msg.edit_text(report_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await status_msg.edit_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def cmd_scene(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /scene hoặc /tree hoặc /hierarchy - Xem cây Node Scene/Prefab và sinh code Binding."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    ws = workspace_mgr.get_current_workspace(user.id)
+    files = cocos_scene_parser.get_scene_and_prefab_files(ws)
+
+    if context.args:
+        query = " ".join(context.args).lower()
+        matched = [f for f in files if query in f.lower()]
+        target_file = matched[0] if matched else query
+        tree_text = cocos_scene_parser.generate_hierarchy_text(ws, target_file)
+        keyboard = [
+            [InlineKeyboardButton("📝 Sinh Code @property Binding", callback_data=f"cocos_scene_bind_custom_{os.path.basename(target_file)}")],
+            [InlineKeyboardButton("⬅️ Danh sách Scene", callback_data="cocos_menu_scenes")],
+        ]
+        try:
+            await update.message.reply_text(tree_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            await update.message.reply_text(tree_text, reply_markup=InlineKeyboardMarkup(keyboard))
+    else:
+        msg, reply_markup = build_cocos_scenes_view(user.id)
+        try:
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        except Exception:
+            await update.message.reply_text(msg, reply_markup=reply_markup)
+
+
+async def cmd_new_script(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /newscript <template> <tên_class> - Tạo Script TypeScript kèm file .meta chuẩn Cocos."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    if not context.args:
+        msg, reply_markup = build_cocos_scripts_select_view(user.id)
+        try:
+            await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup)
+        except Exception:
+            await update.message.reply_text(msg, reply_markup=reply_markup)
+        return
+
+    template_key = context.args[0].lower()
+    class_name = context.args[1] if len(context.args) > 1 else "NewScript"
+
+    ws = workspace_mgr.get_current_workspace(user.id)
+    info = cocos_detector.detect_project(ws)
+
+    ok_gen, res_msg, path = cocos_script_generator.generate_script(
+        workspace_path=ws,
+        template_key=template_key,
+        class_name=class_name,
+        major_version=info.major_version,
+    )
+    keyboard = [
+        [InlineKeyboardButton("📂 Xem danh sách file", callback_data="ws_list_files")],
+        [InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit")],
+    ]
+    try:
+        await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+    except Exception:
+        await update.message.reply_text(res_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+
+async def cmd_fix(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    """Lệnh /fix <nội_dung_lỗi> - Chuyển lỗi cho AI Agent tự động phân tích và sửa mã nguồn."""
+    user = update.effective_user
+    ok, err = auth_mgr.authorize(user.id)
+    if not ok:
+        await send_locked_msg(update) if auth_mgr.is_whitelisted(user.id) else await send_unauthorized_msg(update)
+        return
+
+    if not context.args:
+        await update.message.reply_text("⚠️ Vui lòng cung cấp log hoặc mô tả lỗi: `/fix Player.ts:42 Property 'score' does not exist`", parse_mode=ParseMode.MARKDOWN)
+        return
+
+    error_text = " ".join(context.args)
+    ws = workspace_mgr.get_current_workspace(user.id)
+    issue_id = cocos_log_fixer.register_issue(
+        workspace_path=ws,
+        title="Yêu cầu sửa lỗi nhanh",
+        error_log=error_text,
+    )
+    fix_prompt = cocos_log_fixer.generate_fix_prompt(issue_id)
+
+    # Chạy trực tiếp prompt sửa lỗi
+    runner = agent_mgr.get_active_runner(user.id)
+    status_msg = await update.message.reply_text(f"🛠️ **Đang yêu cầu {runner.display_name} sửa lỗi dự án...**", parse_mode=ParseMode.MARKDOWN)
+
+    final_event = None
+    try:
+        async for event in agent_mgr.execute_prompt(user_id=user.id, prompt=fix_prompt, workspace_dir=ws):
+            if event.event_type == "result":
+                final_event = event
+            elif event.event_type == "error":
+                await status_msg.edit_text(f"❌ {event.content}")
+                return
+    except Exception as e:
+        await status_msg.edit_text(f"❌ Lỗi: {e}")
+        return
+
+    try:
+        await status_msg.delete()
+    except Exception:
+        pass
+
+    if final_event and final_event.content:
+        await send_smart_message(context.bot, update.effective_chat.id, final_event.content, reply_to_message_id=update.message.message_id)
+    else:
+        await update.message.reply_text("✅ AI đã hoàn tất phân tích và sửa chữa.")
 
 
 async def cmd_agent(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -468,15 +869,20 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         return
 
     help_text = (
-        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN LOCAL CONTROLLER**\n\n"
+        f"📖 **HƯỚNG DẪN ĐIỀU KHIỂN LOCAL CONTROLLER & COCOS TOOLKIT**\n\n"
+        f"🎮 **Cocos Creator Dev Toolkit:**\n"
+        f"• `/preview` hoặc `/cocos` - Bật Preview Server và mở game trong Telegram\n"
+        f"• `/toolkit` hoặc `/tools` - Mở menu Bộ công cụ Cocos\n"
+        f"• `/build [web-mobile]` - Tự động đóng gói game và gửi file Zip\n"
+        f"• `/audit` hoặc `/perf` - Thẩm định chất lượng mã nguồn & tối ưu FPS\n"
+        f"• `/scene` hoặc `/tree` - Xem sơ đồ cây Node Scene/Prefab & sinh code @property\n"
+        f"• `/newscript <mẫu> <tên>` - Tạo nhanh Script mẫu (game_manager, audio, pool, joystick)\n"
+        f"• `/fix <lỗi>` - AI tự động phân tích stack trace và sửa bug\n\n"
         f"🔐 **Bảo mật & Khóa:**\n"
-        f"• `/lock` hoặc `/logout` - Khóa ngay bảng điều khiển\n"
+        f"• `/lock` - Khóa ngay bảng điều khiển\n"
         f"• `/unlock <mã_pin>` - Mở khóa Controller\n\n"
-        f"🎮 **Cocos Creator Preview:**\n"
-        f"• Nhấn **🎮 Cocos Preview** hoặc gõ `/preview` để bật server preview game và mở tunnel Cloudflare HTTPS.\n"
-        f"• Nhấn **🎮 OPEN PREVIEW** để chơi game trực tiếp trong ứng dụng Telegram!\n\n"
         f"💬 **Trò chuyện & Lập trình AI:**\n"
-        f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu cho bot để AI tự động code, sửa bug.\n\n"
+        f"• Nhắn trực tiếp câu hỏi hoặc yêu cầu để AI viết code, sửa file.\n\n"
         f"🎛️ **Các lệnh điều khiển:**\n"
         f"• `/start` - Mở bảng điều khiển chính\n"
         f"• `/agent` - Đổi giữa **🤖 Antigravity** và **⚡ OpenAI Codex**\n"
@@ -487,7 +893,7 @@ async def cmd_help(update: Update, context: ContextTypes.DEFAULT_TYPE):
         f"• `/new` hoặc `/reset` - Bắt đầu phiên trò chuyện mới\n"
         f"• `/stop` - Hủy tác vụ AI đang chạy dở\n"
         f"• `/status` - Xem CPU, RAM, Ổ cứng, Uptime máy tính\n"
-        f"• `/screenshot` hoặc `/screen` - Chụp màn hình PC gửi về điện thoại\n"
+        f"• `/screenshot` - Chụp màn hình PC gửi về điện thoại\n"
         f"• `/cmd <lệnh>` - Chạy lệnh PowerShell trực tiếp trên PC\n"
         f"• `/ls [thư mục]` - Xem danh sách file trong workspace\n"
         f"• `/view <file>` - Xem nội dung file ngay trên Telegram"
@@ -711,7 +1117,7 @@ async def cmd_powershell(update: Update, context: ContextTypes.DEFAULT_TYPE):
     current_ws = workspace_mgr.get_current_workspace(user.id)
 
     status_msg = await update.message.reply_text(f"⚡ Đang thực thi: `{cmd}`...", parse_mode=ParseMode.MARKDOWN)
-    code, output = await SystemUtils.run_shell_command(cmd, cwd=current_ws, timeout=60)
+    code, output = await SystemUtils.run_shell_command(cmd, cwd=current_ws)
 
     try:
         await status_msg.delete()
@@ -865,9 +1271,15 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
     if data == "menu_main":
         msg = get_main_dashboard_text(user.id, user.first_name)
         reply_markup = build_main_menu_keyboard(user.id)
-        await query.edit_message_text(
-            msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
-        )
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            try:
+                await query.edit_message_text(msg, reply_markup=reply_markup)
+            except Exception:
+                await query.message.reply_text(msg, reply_markup=reply_markup)
 
     # --- 2. COCOS PREVIEW CONTROLLER ---
     elif data == "cocos_preview" or data == "cocos_status":
@@ -927,6 +1339,256 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
         await query.edit_message_text(
             msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
         )
+
+    elif data == "cocos_toolkit":
+        msg, reply_markup = build_cocos_toolkit_view(user.id)
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+
+    elif data == "cocos_menu_build":
+        msg, reply_markup = build_cocos_build_select_view(user.id)
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+
+    elif data.startswith("cocos_do_build_"):
+        platform = data.replace("cocos_do_build_", "")
+        ws = workspace_mgr.get_current_workspace(user.id)
+        info = cocos_detector.detect_project(ws)
+
+        await query.edit_message_text(
+            f"🚀 **ĐANG ĐÓNG GÓI {platform.upper()}...**\n\n"
+            f"📂 Dự án: `{info.project_name}`\n"
+            f"🛠️ Engine: `Cocos Creator {info.engine_version}`\n\n"
+            f"⏳ *Đang biên dịch tệp... Quá trình có thể mất từ 30s đến 2 phút.*",
+            parse_mode=ParseMode.MARKDOWN,
+        )
+
+        def progress_cb(text: str):
+            logger.info(f"[Build Progress] {text}")
+
+        success, summary, zip_path, log_content = await cocos_builder.build_project(
+            workspace_path=ws,
+            platform=platform,
+            debug=False,
+            status_callback=progress_cb,
+        )
+
+        keyboard = [[InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit")]]
+        if not success and log_content:
+            issue_id = cocos_log_fixer.register_issue(
+                workspace_path=ws,
+                title=f"Build failed ({platform})",
+                error_log=log_content,
+            )
+            keyboard.insert(0, [InlineKeyboardButton("🛠️ Auto-Fix Lỗi này với AI", callback_data=f"cocos_autofix_{issue_id}")])
+
+        try:
+            await query.edit_message_text(summary, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard))
+        except Exception:
+            await query.edit_message_text(summary, reply_markup=InlineKeyboardMarkup(keyboard))
+
+        if success and zip_path and os.path.exists(zip_path):
+            file_size_mb = os.path.getsize(zip_path) / (1024 * 1024)
+            if file_size_mb <= 45.0:
+                try:
+                    with open(zip_path, "rb") as zf:
+                        await query.message.reply_document(
+                            document=zf,
+                            filename=os.path.basename(zip_path),
+                            caption=f"📦 **Gói Build {platform.upper()}** (`{file_size_mb:.2f} MB`)",
+                            parse_mode=ParseMode.MARKDOWN,
+                        )
+                except Exception as e:
+                    logger.warning(f"Lỗi gửi file build zip: {e}")
+
+    elif data == "cocos_menu_scenes":
+        msg, reply_markup = build_cocos_scenes_view(user.id)
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+
+    elif data.startswith("cocos_scene_show_"):
+        idx = int(data.split("_")[-1])
+        ws = workspace_mgr.get_current_workspace(user.id)
+        files = cocos_scene_parser.get_scene_and_prefab_files(ws)
+        if 0 <= idx < len(files):
+            target_file = files[idx]
+            tree_text = cocos_scene_parser.generate_hierarchy_text(ws, target_file)
+            keyboard = [
+                [InlineKeyboardButton("📝 Sinh Code @property Binding", callback_data=f"cocos_scene_bind_{idx}")],
+                [InlineKeyboardButton("⬅️ Danh sách Scene/Prefab", callback_data="cocos_menu_scenes")],
+            ]
+            try:
+                await query.edit_message_text(
+                    tree_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+                )
+            except Exception:
+                await query.edit_message_text(tree_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data.startswith("cocos_scene_bind_custom_"):
+        target_name = data.replace("cocos_scene_bind_custom_", "")
+        ws = workspace_mgr.get_current_workspace(user.id)
+        files = cocos_scene_parser.get_scene_and_prefab_files(ws)
+        matched = [f for f in files if target_name.lower() in f.lower()]
+        target_file = matched[0] if matched else target_name
+        code = cocos_scene_parser.generate_ts_bindings(ws, target_file)
+        result_text = f"💻 **CODE BINDING TYPESCRIPT ({os.path.basename(target_file)}):**\n```typescript\n{code}\n```"
+        await send_smart_message(context.bot, update.effective_chat.id, result_text)
+
+    elif data.startswith("cocos_scene_bind_"):
+        idx = int(data.split("_")[-1])
+        ws = workspace_mgr.get_current_workspace(user.id)
+        files = cocos_scene_parser.get_scene_and_prefab_files(ws)
+        if 0 <= idx < len(files):
+            target_file = files[idx]
+            code = cocos_scene_parser.generate_ts_bindings(ws, target_file)
+            result_text = f"💻 **CODE BINDING TYPESCRIPT ({os.path.basename(target_file)}):**\n```typescript\n{code}\n```"
+            await send_smart_message(context.bot, update.effective_chat.id, result_text)
+
+    elif data == "cocos_menu_scripts":
+        msg, reply_markup = build_cocos_scripts_select_view(user.id)
+        try:
+            await query.edit_message_text(
+                msg, parse_mode=ParseMode.MARKDOWN, reply_markup=reply_markup
+            )
+        except Exception:
+            await query.edit_message_text(msg, reply_markup=reply_markup)
+
+    elif data.startswith("cocos_gen_script_"):
+        template_key = data.replace("cocos_gen_script_", "")
+        ws = workspace_mgr.get_current_workspace(user.id)
+        info = cocos_detector.detect_project(ws)
+
+        class_name_map = {
+            "component": "GameController",
+            "game_manager": "GameManager",
+            "audio_manager": "AudioManager",
+            "object_pool": "ObjectPoolManager",
+            "joystick": "VirtualJoystick",
+            "ui_popup": "BasePopup",
+        }
+        class_name = class_name_map.get(template_key, "NewComponent")
+
+        ok_gen, res_msg, path = cocos_script_generator.generate_script(
+            workspace_path=ws,
+            template_key=template_key,
+            class_name=class_name,
+            major_version=info.major_version,
+        )
+        keyboard = [
+            [InlineKeyboardButton("📂 Xem file", callback_data="ws_list_files")],
+            [InlineKeyboardButton("⬅️ Danh sách Mẫu Script", callback_data="cocos_menu_scripts")],
+        ]
+        try:
+            await query.edit_message_text(
+                res_msg, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception:
+            await query.edit_message_text(res_msg, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "cocos_menu_perf":
+        ws = workspace_mgr.get_current_workspace(user.id)
+        await query.edit_message_text("⚡ **Đang thẩm định hiệu năng toàn bộ mã nguồn...**", parse_mode=ParseMode.MARKDOWN)
+
+        report = cocos_perf_analyzer.audit_workspace(ws)
+        report_text = cocos_perf_analyzer.format_report_text(report)
+
+        keyboard = [
+            [InlineKeyboardButton("🛠️ Tự động tối ưu bằng AI", callback_data="cocos_perf_autofix")],
+            [InlineKeyboardButton("🛠️ Cocos Toolkit", callback_data="cocos_toolkit")],
+        ]
+        try:
+            await query.edit_message_text(
+                report_text, parse_mode=ParseMode.MARKDOWN, reply_markup=InlineKeyboardMarkup(keyboard)
+            )
+        except Exception:
+            await query.edit_message_text(report_text, reply_markup=InlineKeyboardMarkup(keyboard))
+
+    elif data == "cocos_perf_autofix":
+        ws = workspace_mgr.get_current_workspace(user.id)
+        runner = agent_mgr.get_active_runner(user.id)
+
+        report = cocos_perf_analyzer.audit_workspace(ws)
+        report_text = cocos_perf_analyzer.format_report_text(report)
+
+        prompt = (
+            f"⚡ **YÊU CẦU TỐI ƯU HÓA HIỆU NĂNG MÃ NGUỒN COCOS CREATOR**\n\n"
+            f"Dưới đây là báo cáo thẩm định các điểm anti-pattern gây lag / tụt FPS trong dự án:\n\n"
+            f"{report_text}\n\n"
+            f"👉 **Nhiệm vụ:**\n"
+            f"1. Đọc các file được chỉ ra trong báo cáo trên.\n"
+            f"2. Tối ưu hóa triệt để: cache Node/Component thay vì gọi `find`/`getComponent` trong `update()`, bổ sung `node.off` trong `onDestroy()`, tái sử dụng đối tượng.\n"
+            f"3. Đảm bảo logic trò chơi hoạt động chính xác sau khi refactor."
+        )
+
+        status_msg = await query.message.reply_text(f"🛠️ **Đang gửi yêu cầu tối ưu tới {runner.display_name}...**", parse_mode=ParseMode.MARKDOWN)
+
+        final_event = None
+        try:
+            async for event in agent_mgr.execute_prompt(user_id=user.id, prompt=prompt, workspace_dir=ws):
+                if event.event_type == "result":
+                    final_event = event
+                elif event.event_type == "error":
+                    await status_msg.edit_text(f"❌ {event.content}")
+                    return
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Lỗi: {e}")
+            return
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if final_event and final_event.content:
+            await send_smart_message(context.bot, update.effective_chat.id, final_event.content)
+        else:
+            await query.message.reply_text("✅ AI đã hoàn thành tác vụ tối ưu hóa.")
+
+    elif data.startswith("cocos_autofix_"):
+        issue_id = data.replace("cocos_autofix_", "")
+        ws = workspace_mgr.get_current_workspace(user.id)
+        runner = agent_mgr.get_active_runner(user.id)
+
+        fix_prompt = cocos_log_fixer.generate_fix_prompt(issue_id)
+        if not fix_prompt:
+            await query.answer("⚠️ Không tìm thấy thông tin lỗi cũ.", show_alert=True)
+            return
+
+        status_msg = await query.message.reply_text(f"🛠️ **Đang yêu cầu {runner.display_name} sửa lỗi dự án...**", parse_mode=ParseMode.MARKDOWN)
+
+        final_event = None
+        try:
+            async for event in agent_mgr.execute_prompt(user_id=user.id, prompt=fix_prompt, workspace_dir=ws):
+                if event.event_type == "result":
+                    final_event = event
+                elif event.event_type == "error":
+                    await status_msg.edit_text(f"❌ {event.content}")
+                    return
+        except Exception as e:
+            await status_msg.edit_text(f"❌ Lỗi: {e}")
+            return
+
+        try:
+            await status_msg.delete()
+        except Exception:
+            pass
+
+        if final_event and final_event.content:
+            await send_smart_message(context.bot, update.effective_chat.id, final_event.content)
+        else:
+            await query.message.reply_text("✅ AI đã hoàn tất sửa lỗi.")
 
     # --- 3. AGENT & MODEL SETTINGS ---
     elif data == "menu_agent":
@@ -1149,7 +1811,7 @@ async def handle_callback_query(update: Update, context: ContextTypes.DEFAULT_TY
 # ==========================================
 
 async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Lưu tệp hoặc ảnh người dùng gửi vào thư mục làm việc hiện tại."""
+    """Lưu tệp hoặc ảnh người dùng gửi, tự động tối ưu hóa Sprite/Audio và tạo file .meta cho Cocos."""
     user = update.effective_user
     ok, err = auth_mgr.authorize(user.id)
     if not ok:
@@ -1160,32 +1822,62 @@ async def handle_document_upload(update: Update, context: ContextTypes.DEFAULT_T
     photo = update.message.photo
 
     current_ws = workspace_mgr.get_current_workspace(user.id)
-    target_dir = Path(current_ws)
+    info = cocos_detector.detect_project(current_ws)
 
     try:
         if doc:
             file_name = doc.file_name or f"file_{int(time.time())}"
-            target_path = target_dir / file_name
             tfile = await context.bot.get_file(doc.file_id)
-            await tfile.download_to_drive(custom_path=target_path)
-            await update.message.reply_text(
-                f"📥 **Đã lưu tệp:** `{file_name}`\n"
-                f"📂 **Vào thư mục:** `{target_dir}`\n\n"
-                f"💡 Bạn có thể yêu cầu Agent xử lý tệp này ngay bây giờ.",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            byte_data = await tfile.download_as_bytearray()
+
+            if info.is_cocos:
+                ok_imp, msg, meta_data = cocos_asset_importer.import_and_optimize(
+                    file_bytes=bytes(byte_data),
+                    original_filename=file_name,
+                    workspace_path=current_ws,
+                    major_version=info.major_version,
+                )
+                try:
+                    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await update.message.reply_text(msg)
+            else:
+                target_path = Path(current_ws) / file_name
+                with open(target_path, "wb") as f:
+                    f.write(byte_data)
+                await update.message.reply_text(
+                    f"📥 **Đã lưu tệp:** `{file_name}`\n📂 Vào thư mục: `{current_ws}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
+
         elif photo:
             photo_obj = photo[-1]
-            file_name = f"photo_{int(time.time())}.jpg"
-            target_path = target_dir / file_name
+            file_name = f"sprite_{int(time.time())}.png"
             tfile = await context.bot.get_file(photo_obj.file_id)
-            await tfile.download_to_drive(custom_path=target_path)
-            await update.message.reply_text(
-                f"📥 **Đã lưu ảnh:** `{file_name}`\n"
-                f"📂 **Vào thư mục:** `{target_dir}`",
-                parse_mode=ParseMode.MARKDOWN,
-            )
+            byte_data = await tfile.download_as_bytearray()
+
+            if info.is_cocos:
+                ok_imp, msg, meta_data = cocos_asset_importer.import_and_optimize(
+                    file_bytes=bytes(byte_data),
+                    original_filename=file_name,
+                    workspace_path=current_ws,
+                    target_subfolder="assets/textures",
+                    major_version=info.major_version,
+                )
+                try:
+                    await update.message.reply_text(msg, parse_mode=ParseMode.MARKDOWN)
+                except Exception:
+                    await update.message.reply_text(msg)
+            else:
+                target_path = Path(current_ws) / file_name
+                with open(target_path, "wb") as f:
+                    f.write(byte_data)
+                await update.message.reply_text(
+                    f"📥 **Đã lưu ảnh:** `{file_name}`\n📂 Vào thư mục: `{current_ws}`",
+                    parse_mode=ParseMode.MARKDOWN,
+                )
     except Exception as e:
+        logger.exception("Error during document upload handling")
         await update.message.reply_text(f"❌ Lỗi khi tải tệp về máy tính: {e}")
 
 
@@ -1216,13 +1908,22 @@ async def handle_prompt_message(update: Update, context: ContextTypes.DEFAULT_TY
                 pass
 
             dashboard = get_main_dashboard_text(user.id, user.first_name)
-            await update.message.reply_text(
-                f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
-                parse_mode=ParseMode.MARKDOWN,
-                reply_markup=build_main_menu_keyboard(user.id),
-            )
+            try:
+                await update.message.reply_text(
+                    f"🟢 **XÁC THỰC THÀNH CÔNG!**\n\n{dashboard}",
+                    parse_mode=ParseMode.MARKDOWN,
+                    reply_markup=build_main_menu_keyboard(user.id),
+                )
+            except Exception:
+                await update.message.reply_text(
+                    f"🟢 XÁC THỰC THÀNH CÔNG!\n\n{dashboard}",
+                    reply_markup=build_main_menu_keyboard(user.id),
+                )
         else:
-            await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+            try:
+                await update.message.reply_text(res_msg, parse_mode=ParseMode.MARKDOWN)
+            except Exception:
+                await update.message.reply_text(res_msg)
         return
 
     # --- 2. XỬ LÝ PROMPT LẬP TRÌNH KHI ĐÃ AUTHENTICATED ---
@@ -1362,17 +2063,39 @@ def main():
     print(f"🛠️ agy path: {Config.AGY_PATH}")
     print(f"⚡ codex path: {Config.CODEX_PATH}")
     print(f"🌐 cloudflared path: {Config.CLOUDFLARED_PATH or 'Chưa tìm thấy'}")
+    if Config.TELEGRAM_PROXY_URL:
+        print(f"🛡️ Telegram Proxy: {Config.TELEGRAM_PROXY_URL}")
+    if Config.TELEGRAM_BASE_URL:
+        print(f"🔗 Telegram Base URL: {Config.TELEGRAM_BASE_URL}")
     print(f"👥 Allowed Users: {Config.ALLOWED_USER_IDS or 'Chưa có (sẽ chặn tất cả truy cập)'}")
     print(f"🔐 Security: PIN Hash scrypt verified | Rate Limit: {Config.AUTH_MAX_ATTEMPTS} attempts / {Config.AUTH_LOCKOUT_SECONDS}s lockout")
     print("=" * 60)
 
-    app = Application.builder().token(token).build()
+    # Cấu hình HTTPXRequest với Timeout và Proxy hỗ trợ vượt chặn mạng
+    req = HTTPXRequest(
+        connect_timeout=Config.TELEGRAM_CONNECT_TIMEOUT,
+        read_timeout=Config.TELEGRAM_READ_TIMEOUT,
+        write_timeout=Config.TELEGRAM_WRITE_TIMEOUT,
+        pool_timeout=10.0,
+        proxy=Config.TELEGRAM_PROXY_URL if Config.TELEGRAM_PROXY_URL else None,
+    )
+
+    builder = Application.builder().token(token).request(req).get_updates_request(req)
+    if Config.TELEGRAM_BASE_URL:
+        builder = builder.base_url(Config.TELEGRAM_BASE_URL)
+    app = builder.build()
 
     # Đăng ký Command Handlers
     app.add_handler(CommandHandler(["start"], cmd_start))
     app.add_handler(CommandHandler(["lock", "logout"], cmd_lock))
     app.add_handler(CommandHandler(["unlock", "auth"], cmd_unlock))
     app.add_handler(CommandHandler(["preview", "cocos", "game"], cmd_cocos_preview))
+    app.add_handler(CommandHandler(["toolkit", "tools"], cmd_toolkit))
+    app.add_handler(CommandHandler(["build", "package"], cmd_build))
+    app.add_handler(CommandHandler(["audit", "perf", "analyze"], cmd_audit))
+    app.add_handler(CommandHandler(["scene", "tree", "hierarchy"], cmd_scene))
+    app.add_handler(CommandHandler(["newscript", "create", "genscript"], cmd_new_script))
+    app.add_handler(CommandHandler(["fix", "autofix"], cmd_fix))
     app.add_handler(CommandHandler(["agent", "engine"], cmd_agent))
     app.add_handler(CommandHandler(["account", "profile"], cmd_account))
     app.add_handler(CommandHandler(["help"], cmd_help))
@@ -1422,7 +2145,24 @@ def main():
     atexit.register(cleanup)
 
     print("🤖 Controller đã sẵn sàng và đang ở trạng thái LOCKED. Nhấn Ctrl+C để dừng.")
-    app.run_polling(drop_pending_updates=True)
+    try:
+        app.run_polling(drop_pending_updates=True, bootstrap_retries=3)
+    except (TimedOut, NetworkError) as e:
+        logger.error(f"Lỗi mạng khi kết nối Telegram API: {e}")
+        print("\n" + "=" * 60)
+        print("❌ LỖI KẾT NỐI MẠNG TỚI TELEGRAM API (Connect / Timed Out):")
+        print("Máy tính không thể kết nối tới máy chủ https://api.telegram.org.")
+        print("\n💡 NGUYÊN NHÂN & CÁCH KHẮC PHỤC:")
+        print("1. Nhà mạng tại Việt Nam (Viettel, VNPT, FPT...) thường chặn kết nối tới Telegram:")
+        print("   👉 Giải pháp 1: Bật VPN trên máy tính (1.1.1.1 WARP, ProtonVPN, v.v.).")
+        print("   👉 Giải pháp 2: Sử dụng Proxy (Clash, V2Ray, Shadowsocks, HTTP/SOCKS5 Proxy).")
+        print("      Thêm vào file .env:")
+        print("      TELEGRAM_PROXY_URL=http://127.0.0.1:7890 (hoặc socks5://127.0.0.1:10808)")
+        print("   👉 Giải pháp 3: Sử dụng Telegram API Reverse Proxy (Cloudflare Worker).")
+        print("      Thêm vào file .env:")
+        print("      TELEGRAM_BASE_URL=https://your-domain.workers.dev/bot")
+        print("=" * 60 + "\n")
+        sys.exit(1)
 
 
 if __name__ == "__main__":

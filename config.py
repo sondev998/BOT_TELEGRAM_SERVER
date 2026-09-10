@@ -12,6 +12,13 @@ class Config:
     BASE_DIR: Path = BASE_DIR
     TELEGRAM_BOT_TOKEN: str = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
 
+    # Cấu hình Mạng & Proxy Telegram (hỗ trợ vượt tường lửa/chặn mạng)
+    TELEGRAM_PROXY_URL: str = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+    TELEGRAM_BASE_URL: str = os.getenv("TELEGRAM_BASE_URL", "").strip()
+    TELEGRAM_CONNECT_TIMEOUT: float = float(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "30.0"))
+    TELEGRAM_READ_TIMEOUT: float = float(os.getenv("TELEGRAM_READ_TIMEOUT", "30.0"))
+    TELEGRAM_WRITE_TIMEOUT: float = float(os.getenv("TELEGRAM_WRITE_TIMEOUT", "30.0"))
+
     # Danh sách User ID được phép truy cập (Whitelist)
     _allowed_raw: str = os.getenv("ALLOWED_USER_IDS", "").strip()
     ALLOWED_USER_IDS: set[int] = set()
@@ -42,7 +49,11 @@ class Config:
     DEFAULT_MODEL: str = DEFAULT_ANTIGRAVITY_MODEL  # Giữ tương thích
     DEFAULT_EFFORT: str = os.getenv("DEFAULT_EFFORT", "high").strip()
     DEFAULT_MODE: str = os.getenv("DEFAULT_MODE", "accept-edits").strip()
-    TASK_TIMEOUT: int = int(os.getenv("TASK_TIMEOUT", "600"))
+    # Cấu hình Thời gian chờ (Timeouts - Đơn vị: giây)
+    TASK_TIMEOUT: int = int(os.getenv("TASK_TIMEOUT", "1800"))
+    SHELL_TIMEOUT: int = int(os.getenv("SHELL_TIMEOUT", "300"))
+    COCOS_PREVIEW_TIMEOUT: int = int(os.getenv("COCOS_PREVIEW_TIMEOUT", "120"))
+    CLOUDFLARE_TUNNEL_TIMEOUT: int = int(os.getenv("CLOUDFLARE_TUNNEL_TIMEOUT", "60"))
 
     # Cấu hình OpenAI Codex CLI
     DEFAULT_CODEX_MODEL: str = os.getenv(
@@ -121,6 +132,11 @@ class Config:
         """Tải lại file .env khi có thay đổi."""
         load_dotenv(BASE_DIR / ".env", override=True)
         cls.TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        cls.TELEGRAM_PROXY_URL = os.getenv("TELEGRAM_PROXY_URL", "").strip()
+        cls.TELEGRAM_BASE_URL = os.getenv("TELEGRAM_BASE_URL", "").strip()
+        cls.TELEGRAM_CONNECT_TIMEOUT = float(os.getenv("TELEGRAM_CONNECT_TIMEOUT", "30.0"))
+        cls.TELEGRAM_READ_TIMEOUT = float(os.getenv("TELEGRAM_READ_TIMEOUT", "30.0"))
+        cls.TELEGRAM_WRITE_TIMEOUT = float(os.getenv("TELEGRAM_WRITE_TIMEOUT", "30.0"))
         cls._allowed_raw = os.getenv("ALLOWED_USER_IDS", "").strip()
         cls.ALLOWED_USER_IDS = set()
         if cls._allowed_raw:
@@ -145,6 +161,10 @@ class Config:
         ).strip()
         cls.DEFAULT_EFFORT = os.getenv("DEFAULT_EFFORT", "high").strip()
         cls.DEFAULT_MODE = os.getenv("DEFAULT_MODE", "accept-edits").strip()
+        cls.TASK_TIMEOUT = int(os.getenv("TASK_TIMEOUT", "1800"))
+        cls.SHELL_TIMEOUT = int(os.getenv("SHELL_TIMEOUT", "300"))
+        cls.COCOS_PREVIEW_TIMEOUT = int(os.getenv("COCOS_PREVIEW_TIMEOUT", "120"))
+        cls.CLOUDFLARE_TUNNEL_TIMEOUT = int(os.getenv("CLOUDFLARE_TUNNEL_TIMEOUT", "60"))
         cls.COCOS_CREATOR_PATH = os.getenv("COCOS_CREATOR_PATH", "").strip()
         cls.COCOS_CREATOR_2X_PATH = os.getenv("COCOS_CREATOR_2X_PATH", "").strip()
         cls.COCOS_CREATOR_3X_PATH = os.getenv("COCOS_CREATOR_3X_PATH", "").strip()

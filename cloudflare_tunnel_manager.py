@@ -66,9 +66,14 @@ class CloudflareTunnelManager:
         mode: str = "quick",
         tunnel_name: str = "",
         hostname: str = "",
-        timeout_seconds: int = 30,
+        timeout_seconds: Optional[int] = None,
     ) -> tuple[bool, str]:
         """Khởi động Cloudflare Tunnel trỏ tới port preview."""
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else getattr(Config, "CLOUDFLARE_TUNNEL_TIMEOUT", 60)
+        )
         if self.state == TunnelState.RUNNING and self.public_url:
             logger.info(f"[Cloudflare] Tunnel already running at {self.public_url}")
             return True, self.public_url
@@ -116,7 +121,7 @@ class CloudflareTunnelManager:
             url_pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
             start_wait = time.time()
 
-            while time.time() - start_wait < timeout_seconds:
+            while time.time() - start_wait < effective_timeout:
                 if process.returncode is not None:
                     break
 

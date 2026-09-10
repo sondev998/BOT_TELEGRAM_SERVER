@@ -5,10 +5,12 @@ import platform
 import subprocess
 import time
 from datetime import timedelta
+from typing import Optional
 import psutil
 from PIL import ImageGrab
 
 from account_manager import account_mgr
+from config import Config
 from security_guard import security_guard
 
 
@@ -97,11 +99,13 @@ class SystemUtils:
 
     @classmethod
     async def run_shell_command(
-        cls, command: str, cwd: str, timeout: int = 60
+        cls, command: str, cwd: str, timeout: Optional[int] = None
     ) -> tuple[int, str]:
         """
         Thực thi lệnh PowerShell trực tiếp trên máy sau khi đã qua màng lọc kiểm duyệt an toàn.
         """
+        effective_timeout = timeout if timeout is not None else Config.SHELL_TIMEOUT
+
         # 1. Kiểm tra an toàn trước khi thực thi
         is_safe, error_msg = security_guard.is_command_safe(command)
         if not is_safe:
@@ -122,7 +126,7 @@ class SystemUtils:
 
             try:
                 stdout, _ = await asyncio.wait_for(
-                    process.communicate(), timeout=timeout
+                    process.communicate(), timeout=effective_timeout
                 )
                 output = stdout.decode("utf-8", errors="replace")
                 return process.returncode or 0, output
@@ -131,6 +135,6 @@ class SystemUtils:
                     process.kill()
                 except Exception:
                     pass
-                return -1, f"❌ Lệnh đã vượt quá thời gian chờ ({timeout}s)."
+                return -1, f"❌ Lệnh đã vượt quá thời gian chờ ({effective_timeout}s)."
         except Exception as e:
             return -1, f"❌ Lỗi thực thi lệnh: {e}"

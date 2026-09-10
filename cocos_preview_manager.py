@@ -94,11 +94,16 @@ class CocosPreviewManager:
         self,
         workspace_path: str,
         status_callback: Optional[Callable[[str], None]] = None,
-        timeout_seconds: int = 60,
+        timeout_seconds: Optional[int] = None,
     ) -> tuple[bool, str]:
         """
         Khởi động Cocos Creator Preview cho project và mở Cloudflare Tunnel.
         """
+        effective_timeout = (
+            timeout_seconds
+            if timeout_seconds is not None
+            else getattr(Config, "COCOS_PREVIEW_TIMEOUT", 120)
+        )
         async with self._lock:
             # 1. Nếu đang chạy cùng project và tunnel vẫn sống
             if (
@@ -182,7 +187,7 @@ class CocosPreviewManager:
 
                 start_wait = time.time()
                 found_port = None
-                while time.time() - start_wait < timeout_seconds:
+                while time.time() - start_wait < effective_timeout:
                     found_port = self.detect_active_preview_port()
                     if found_port:
                         break
@@ -190,7 +195,7 @@ class CocosPreviewManager:
 
                 if not found_port:
                     self.state = CocosPreviewState.ERROR
-                    self.error_message = f"Cocos Creator không mở cổng preview sau {timeout_seconds}s chờ đợi."
+                    self.error_message = f"Cocos Creator không mở cổng preview sau {effective_timeout}s chờ đợi."
                     logger.error(f"[Cocos] ERROR: {self.error_message}")
                     return False, self.error_message
 

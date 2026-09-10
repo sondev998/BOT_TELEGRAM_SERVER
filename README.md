@@ -51,29 +51,51 @@ flowchart TD
 
 ---
 
-### 4. 🤖 Hỗ trợ 2 AI Agent độc lập (Dual Engine)
+### 4. 🛠️ Cocos Creator Dev Toolkit (Bộ Công Cụ Lập Trình Chuyên Nghiệp)
+- **📦 Đóng gói & Build Game 1-Chạm (`/build [platform]`):**
+  - Tự động gọi trình build dòng lệnh của Cocos Creator 2.x & 3.x (`web-mobile`, `web-desktop`).
+  - Nén tự động thư mục output thành file `.zip` và gửi trực tiếp qua Telegram (hoặc cung cấp đường dẫn).
+- **🛠️ Bắt Lỗi & Auto-Fix bằng AI (`/fix <lỗi>`):**
+  - Trích xuất Stack Trace, tệp tin và số dòng gây lỗi từ Compiler / Build log / Runtime exception.
+  - Tích hợp nút bấm **`[ 🛠️ Auto-Fix Lỗi này với AI ]`** để tự động chuyển ngữ cảnh lỗi sang Antigravity / Codex sửa chữa.
+- **🌳 Hierarchy Inspector & TypeScript Binding Generator (`/scene [tên_file]`):**
+  - Phân tích cú pháp tệp `.scene`, `.fire`, `.prefab` (JSON).
+  - Hiển thị cây phân cấp Node trực quan với icon đại diện từng Component.
+  - Tự động sinh mã nguồn `@property` Binding TypeScript sẵn sàng copy vào Controller.
+- **📝 Bộ tạo Script TypeScript & File .meta Tự Động (`/newscript <template> <tên>`):**
+  - Hỗ trợ các mẫu thiết kế chuẩn Cocos: `game_manager`, `audio_manager`, `object_pool`, `joystick`, `ui_popup`, `component`.
+  - Tự sinh UUID chuẩn cho tệp `.meta` đi kèm để Engine không bị mất reference.
+- **🎨 Smart Asset Importer & Tối ưu hóa Ảnh/Âm thanh:**
+  - Gửi ảnh Sprite từ điện thoại: Tự động nén không giảm chất lượng (Pillow), chuyển về `assets/textures/` và tạo file `.meta` SpriteFrame.
+  - Gửi file âm thanh: Tự động lưu vào `assets/audios/` kèm file `.meta` AudioClip.
+- **⚡ Thẩm định Hiệu năng Mã Nguồn (`/audit` hoặc `/perf`):**
+  - Quét tĩnh các lỗi gây tụt FPS, rò rỉ bộ nhớ: gọi `find()` trong `update()`, `instantiate()` không dùng Object Pool, rò rỉ `node.on` thiếu `onDestroy()`, cấp phát rác bộ nhớ (`new Vec2`) mỗi frame.
+  - Cho điểm tối ưu (0-100) và nút bấm **`[ 🛠️ Tự động tối ưu bằng AI ]`** để refactor toàn bộ code.
+
+---
+
+### 5. 🤖 Hỗ trợ 2 AI Agent độc lập (Dual Engine)
 - **🤖 Google Antigravity:** Gemini 3.7 Flash, Gemini 3.1 Pro, Claude Sonnet 4.6, Claude Opus 4.6 (Thinking), chế độ Accept-Edits và Plan.
 - **⚡ OpenAI Codex:** GPT-5.6 Terra, OpenAI o3, o3-mini, GPT-4.1, Reasoning Effort (Low, Medium, High), Elevated Sandbox & MCP Tools.
 - **Chuyển đổi tức thì:** Đổi giữa 2 Engine bất kỳ lúc nào với lệnh `/agent` hoặc qua menu Telegram.
 
 ---
 
-### 5. 👤 Quản lý Thông tin Tài khoản AI Tự động
+### 6. 👤 Quản lý Thông tin Tài khoản AI Tự động
 - Tự động nhận diện Email, Tên chủ tài khoản, Gói cước (Free, Plus, Pro, Consumer) của cả 2 Engine qua Windows Credential Manager (`gemini:antigravity`) và `~/.codex/auth.json`.
 - Cơ chế **Multi-tier Fallback 4 tầng** đảm bảo không bao giờ bị mất thông tin tài khoản.
 - Xem chi tiết qua lệnh `/account` hoặc nút **`[ 👤 Tài khoản AI ]`**.
 
 ---
 
-### 6. 📁 Quản lý Workspace & File Explorer
+### 7. 📁 Quản lý Workspace & File Explorer
 - Tự động nhận diện các thư mục dự án đã mở từ Antigravity (`settings.json`) và Codex (`config.toml`).
 - Đổi thư mục làm việc nhanh chóng với `/workspace` hoặc `/cd <đường_dẫn>`.
 - Xem danh sách tệp (`/ls`) và đọc trực tiếp mã nguồn (`/view <file>`) ngay trên Telegram.
-- Tải tệp/ảnh từ điện thoại lên PC trực tiếp vào thư mục dự án.
 
 ---
 
-### 7. 🖥️ Giám sát Hệ thống PC & Chụp Màn Hình
+### 8. 🖥️ Giám sát Hệ thống PC & Chụp Màn Hình
 - `/status`: Kiểm tra mức sử dụng CPU, RAM, dung lượng các ổ đĩa (C:, D:, E:...), Uptime máy tính và Agent hiện tại.
 - `/screenshot`: Chụp ảnh màn hình máy tính gửi về Telegram theo thời gian thực.
 - `/cmd <lệnh>`: Thực thi các lệnh PowerShell an toàn (được bảo vệ bởi Security Guard).
@@ -82,19 +104,12 @@ flowchart TD
 
 ## 🚀 Hướng dẫn Cài đặt & Khởi chạy (Chỉ 2 phút)
 
-### Bước 1: TẠO BOT TELEGRAM 
-Mở Telegram và tìm: @BotFather
-BotFather là bot chính thức dùng để tạo và quản lý Telegram Bot: /newbot
-BotFather sẽ hỏi: Alright, a new bot. How are we going to call it?
-Nhập tên hiển thị, Ví dụ: Antigravity Controller
-Sau đó BotFather yêu cầu username, Ví dụ: antigravity_controller_bot
-Sau khi tạo thành công, BotFather trả về một Token_Telegram_Của_Bạn dạng: 1234567890:AAxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx
-Nhắn 1 tin nhắn bất kỳ để bot trả lời lại với thông tin chứa ID_Telegram_Của_Bạn, có dạng: 1234567890
+### Bước 1: Tạo Bot Telegram
+1. Mở Telegram và tìm `@BotFather`.
+2. Gõ `/newbot` và đặt tên cho Bot (ví dụ: `CocosDevBot`).
+3. BotFather sẽ cấp mã `TELEGRAM_BOT_TOKEN`.
 
-
-
-###
-
+---
 
 ### Bước 2: Cấu hình file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env)
 Mở file [`.env`](file:///E:/TELEGRAM_BOT/CocosDevBot/.env) trong thư mục `E:\TELEGRAM_BOT\CocosDevBot\` và cập nhật:
@@ -103,7 +118,6 @@ TELEGRAM_BOT_TOKEN=Token_Telegram_Của_Bạn
 ALLOWED_USER_IDS=ID_Telegram_Của_Bạn
 DEFAULT_AGENT=antigravity # hoặc codex
 AUTH_AUTO_LOCK_MINUTES=30
-
 ```
 
 > 💡 **Cách tạo mã PIN bảo mật mới:**
@@ -127,10 +141,16 @@ AUTH_AUTO_LOCK_MINUTES=30
 | Lệnh | Chức năng |
 | :--- | :--- |
 | **Nhắn tin trực tiếp** | Gửi yêu cầu lập trình / sửa bug cho AI Agent (hoặc gửi PIN để mở khóa nếu đang LOCKED) |
-| `/start` | Mở bảng điều khiển và menu phím tắt |
+| `/start` | Mở bảng điều khiển và menu phím tắt chính |
+| `/toolkit` hoặc `/tools` | Mở **Cocos Creator Dev Toolkit** |
+| `/build [platform]` | Tự động **đóng gói & build game** (Web Mobile) xuất file Zip |
+| `/audit` hoặc `/perf` | **Thẩm định hiệu năng** mã nguồn Cocos, quét anti-pattern gây lag |
+| `/scene` hoặc `/tree` | Xem **sơ đồ cây Node** Scene/Prefab và sinh code `@property` |
+| `/newscript <mẫu> <tên>` | Tạo nhanh **Script mẫu chuẩn** (`game_manager`, `audio`, `pool`, `joystick`) kèm `.meta` |
+| `/fix <lỗi>` | AI tự động phân tích stack trace và **sửa lỗi code** |
+| `/preview` hoặc `/cocos` | Mở bảng điều khiển **Cocos Creator Preview** |
 | `/lock` hoặc `/logout` | **Khóa ngay lập tức** bảng điều khiển |
 | `/unlock [pin]` | Mở khóa Controller bằng mã PIN |
-| `/preview` hoặc `/cocos` | Mở bảng điều khiển **Cocos Creator Preview** |
 | `/agent` | Chuyển đổi giữa **🤖 Google Antigravity** và **⚡ OpenAI Codex** |
 | `/account` | Xem chi tiết thông tin tài khoản AI (Email, Gói cước Free/Pro/Plus) |
 | `/model` | Cấu hình Model AI (Gemini, Claude, GPT, o3...) và Reasoning Effort |
@@ -154,6 +174,12 @@ E:\TELEGRAM_BOT\CocosDevBot\
 ├── bot.py                     # Chương trình chính Telegram Bot & Authorization Middleware
 ├── auth_manager.py            # Quản lý Xác thực đa lớp, mã hóa scrypt, Rate Limit & Auto-Lock
 ├── security_guard.py          # Tường lửa kiểm soát lệnh nguy hiểm (Chặn Format, Wiping, IEX...)
+├── cocos_builder.py           # Tự động hóa đóng gói game CLI (2.x/3.x) & nén ZIP
+├── cocos_log_fixer.py         # Trích xuất lỗi compiler/stack trace & Prompt Auto-Fix
+├── cocos_scene_parser.py      # Phân tích cây Node Scene/Prefab & sinh code @property binding
+├── cocos_script_generator.py  # Tạo script mẫu chuẩn Cocos (GameManager, Audio, Pool, Joystick) kèm .meta
+├── cocos_asset_importer.py    # Tối ưu hóa ảnh Sprite (Pillow), âm thanh & tạo .meta SpriteFrame tự động
+├── cocos_perf_analyzer.py     # Thẩm định hiệu năng mã nguồn tĩnh (phát hiện anti-pattern gây tụt FPS)
 ├── cocos_preview_manager.py   # Bộ điều khiển vòng đời Cocos Preview & Cloudflare Tunnel
 ├── cocos_detector.py          # Tự động nhận diện dự án Cocos 2.x/3.x & Vị trí cài Engine
 ├── cloudflare_tunnel_manager.py # Quản lý tiến trình Cloudflare Tunnel (cloudflared)

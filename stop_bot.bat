@@ -11,7 +11,7 @@ echo.
 cd /d "%~dp0"
 
 :: Đóng tiến trình python chạy bot.py
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.CommandLine -like '*bot.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue; Write-Host ('[+] Da dung bot process PID: ' + $_.ProcessId) }"
+python -c "import os, psutil; [p.kill() for p in psutil.process_iter(['pid','cmdline']) if p.pid != os.getpid() and any('bot.py' in str(arg) for arg in (p.info['cmdline'] or []))]" 2>nul
 
 echo.
 echo [*] Da dung tat ca cac tien trinh Bot thanh cong!

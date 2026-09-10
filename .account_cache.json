@@ -1,16 +1,16 @@
 {
   "antigravity": {
-    "email": "jenastore.ltd@gmail.com",
-    "name": "jena store",
+    "email": "sonle.dev998@gmail.com",
+    "name": "son le",
     "plan_type": "Google AI Studio / Consumer",
     "auth_mode": "Google OAuth (consumer)",
-    "saved_at": 1788348609.145095
+    "saved_at": 1789048997.9284434
   },
   "codex": {
     "email": "jenastore.ltd@gmail.com",
     "name": "jena store",
     "plan_type": "FREE",
     "auth_mode": "CHATGPT",
-    "saved_at": 1788347496.8050704
+    "saved_at": 1789048184.2389636
   }
 }

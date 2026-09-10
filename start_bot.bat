@@ -28,7 +28,7 @@ python -m pip install -r requirements.txt --quiet --disable-pip-version-check
 
 :: Tu dong dung cac phien bot cu de tranh loi 409 Conflict
 echo [*] Kiem tra va dong cac tien trinh bot cu...
-powershell -NoProfile -Command "Get-CimInstance Win32_Process | Where-Object { $_.ProcessId -ne $PID -and $_.CommandLine -like '*bot.py*' } | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
+python -c "import os, psutil; [p.kill() for p in psutil.process_iter(['pid','cmdline']) if p.pid != os.getpid() and any('bot.py' in str(arg) for arg in (p.info['cmdline'] or []))]" 2>nul
 
 echo [*] Dang khoi dong Telegram Bot...
 echo.
